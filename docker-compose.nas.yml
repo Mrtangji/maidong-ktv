@@ -1,0 +1,23 @@
+# 麦动KTV 服务端 —— NAS 独立部署（无需 .env，直接用镜像）
+#
+# 用法（NAS SSH 终端）:
+#   mkdir -p /vol1/1000/docker/maidong-ktv/{music,data}
+#   docker compose -f docker-compose.nas.yml up -d
+#
+# 曲库会全量缓存到 /vol1/1000/docker/maidong-ktv/music
+services:
+  maidong-ktv:
+    image: docker.io/itangji/maidong-ktv-server:latest
+    container_name: maidong-ktv
+    restart: unless-stopped
+    network_mode: host            # host 网络最简单：UDP 发现 + HTTP 同端口
+    # 如 NAS 不支持 host 网络，注释上面一行并启用下面的端口映射：
+    # ports:
+    #   - "8080:8080"
+    #   - "18888:18888/udp"
+    volumes:
+      - /vol1/1000/docker/maidong-ktv/music:/music   # 曲库缓存（按 NAS 实际路径修改）
+      - /vol1/1000/docker/maidong-ktv/data:/data     # 音源脚本/索引/队列
+    environment:
+      - PORT=8080
+      - DISCOVERY_PORT=18888

@@ -1,0 +1,17 @@
+# 麦动KTV 服务端 —— 开发/本机运行
+# 用法: docker compose up -d
+services:
+  maidong-ktv:
+    build: .
+    image: maidong-ktv-server:latest
+    container_name: maidong-ktv
+    restart: unless-stopped
+    ports:
+      - "8080:8080"        # HTTP（电视/手机端访问）
+      - "18888:18888/udp"  # 局域网自动发现
+    volumes:
+      - ./music:/music     # NAS 曲库缓存（歌曲 + 歌词）
+      - ./data:/data       # LX 音源脚本 / 索引 / 队列
+    environment:
+      - PORT=8080
+      - DISCOVERY_PORT=18888

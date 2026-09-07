@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>麦动KTV · 手机点歌</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --line:#e5e8f0; --text:#1c2230; --dim:#7a8194; --accent:#ff5c7a; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding-bottom:70px; }
+  header { background:var(--accent); color:#fff; padding:16px; font-size:20px; font-weight:700; position:sticky; top:0; z-index:10; }
+  header small { display:block; font-size:12px; font-weight:400; opacity:.85; margin-top:2px; }
+  nav { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line); display:flex; z-index:10; }
+  nav div { flex:1; text-align:center; padding:12px 0; font-size:14px; color:var(--dim); }
+  nav div.active { color:var(--accent); font-weight:700; }
+  section { display:none; padding:12px; }
+  section.active { display:block; }
+  .searchbar { display:flex; gap:8px; margin-bottom:12px; }
+  .searchbar input { flex:1; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:16px; outline:none; }
+  .searchbar button { padding:0 18px; border:none; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; }
+  .card { background:var(--card); border-radius:12px; margin-bottom:10px; padding:12px; display:flex; align-items:center; gap:12px; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .card img { width:48px; height:48px; border-radius:8px; object-fit:cover; background:var(--bg); }
+  .meta { flex:1; min-width:0; }
+  .meta .t { font-size:16px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta .s { font-size:13px; color:var(--dim); margin-top:2px; }
+  .act { padding:7px 14px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-size:14px; }
+  .act.ghost { background:var(--bg); color:var(--dim); }
+  .tag { font-size:11px; color:#2ca55e; border:1px solid #2ca55e; border-radius:5px; padding:0 4px; margin-left:4px; }
+  .empty { text-align:center; color:var(--dim); padding:50px 0; font-size:14px; }
+  .hint { font-size:13px; color:var(--dim); background:var(--card); border-radius:10px; padding:12px; margin-bottom:10px; line-height:1.6; }
+  textarea { width:100%; height:120px; border:1px solid var(--line); border-radius:10px; padding:10px; font-size:12px; font-family:monospace; }
+  .btn { width:100%; padding:12px; border:none; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; margin-top:10px; }
+  .btn.ghost { background:var(--bg); color:var(--text); border:1px solid var(--line); }
+  .stat { font-size:13px; color:var(--dim); margin:8px 0; }
+  .playing { color:var(--accent); font-weight:700; }
+</style>
+</head>
+<body>
+<header>麦动KTV<small id="serverInfo">连接中…</small></header>
+
+<section id="tab-search" class="active">
+  <div class="searchbar">
+    <input id="kw" placeholder="歌名 / 歌手">
+    <button onclick="doSearch()">搜索</button>
+  </div>
+  <div class="hint">▸ 点击「点歌」加入电视端队列；<b>已缓存</b> = 已存在 NAS 曲库</div>
+  <div id="results"></div>
+</section>
+
+<section id="tab-queue">
+  <div class="stat" id="queueStat"></div>
+  <div id="queueList"></div>
+</section>
+
+<section id="tab-library">
+  <div class="stat" id="libStat"></div>
+  <button class="btn ghost" onclick="cacheBoard()">缓存「KTV点唱榜」全部到 NAS</button>
+  <div id="libList" style="margin-top:12px"></div>
+</section>
+
+<section id="tab-source">
+  <div class="hint" id="sourceInfo">读取中…</div>
+  <textarea id="script" placeholder="把 LX 音源脚本（.js 全文）粘贴到这里"></textarea>
+  <button class="btn" onclick="importScript()">导入 / 更新音源脚本</button>
+  <button class="btn ghost" onclick="removeScript()">移除当前音源脚本</button>
+</section>
+
+<nav>
+  <div class="active" data-t="search">🔍 搜索</div>
+  <div data-t="queue">📋 已点</div>
+  <div data-t="library">💾 曲库</div>
+  <div data-t="source">🎵 音源</div>
+</nav>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const api = (p, opt) => fetch(p, opt).then(async (r) => {
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+});
+const esc = (v) => String(v || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+document.querySelectorAll('nav div').forEach((d) => d.addEventListener('click', () => {
+  document.querySelectorAll('nav div').forEach((x) => x.classList.remove('active'));
+  document.querySelectorAll('section').forEach((x) => x.classList.remove('active'));
+  d.classList.add('active');
+  $('#tab-' + d.dataset.t).classList.add('active');
+  if (d.dataset.t === 'queue') refreshQueue();
+  if (d.dataset.t === 'library') refreshLibrary();
+  if (d.dataset.t === 'source') refreshSource();
+}));
+
+$('#kw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+async function doSearch() {
+  const kw = $('#kw').value.trim();
+  if (!kw) return;
+  $('#results').innerHTML = '<div class="empty">搜索中…</div>';
+  try {
+    const { songs } = await api(`/api/v1/search?keyword=${encodeURIComponent(kw)}&limit=30`);
+    $('#results').innerHTML = songs.map((s, i) => `
+      <div class="card">
+        ${s.pic ? `<img src="${esc(s.pic)}" onerror="this.style.visibility='hidden'">` : ''}
+        <div class="meta"><div class="t">${esc(s.title)}${s.cached ? '<span class="tag">已缓存</span>' : ''}</div>
+        <div class="s">${esc(s.singer)}</div></div>
+        <button class="act" onclick="order('${esc(s.songId)}',${i})">点歌</button>
+      </div>`).join('') || '<div class="empty">没有结果</div>';
+    window._search = songs;
+  } catch (e) { $('#results').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function order(songId, i) {
+  const s = (window._search || [])[i];
+  try {
+    await api('/api/v1/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ songId: s.songId, title: s.title, singer: s.singer, album: s.album, pic: s.pic, musicInfo: s.musicInfo }),
+    });
+    alert(`已点「${s.title}」，电视端将自动播放`);
+  } catch (e) { alert('点歌失败：' + e.message); }
+}
+
+async function refreshQueue() {
+  try {
+    const { items } = await api('/api/v1/queue');
+    $('#queueStat').textContent = `已点 ${items.length} 首（第 1 首在电视端播放中）`;
+    $('#queueList').innerHTML = items.map((s, i) => `
+      <div class="card">
+        <div class="meta"><div class="t ${i === 0 ? 'playing' : ''}">${i === 0 ? '▶ ' : ''}${esc(s.title)}</div>
+        <div class="s">${esc(s.singer)}</div></div>
+        <button class="act ghost" onclick="delQueue(${i})">移除</button>
+      </div>`).join('') || '<div class="empty">还没有点歌</div>';
+  } catch (e) { $('#queueList').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function delQueue(i) {
+  if (i === 0) await api('/api/v1/queue/played');
+  else await api(`/api/v1/queue/${i}`, { method: 'DELETE' });
+  refreshQueue();
+}
+
+async function refreshLibrary() {
+  try {
+    const { songs, status } = await api('/api/v1/library');
+    $('#libStat').textContent = `NAS 曲库 ${songs.length} 首 · 排队缓存 ${status.pending} 首 · 失败 ${status.failedCount} 首`;
+    $('#libList').innerHTML = songs.slice(0, 100).map((s) => `
+      <div class="card">
+        <div class="meta"><div class="t">${esc(s.title)}<span class="tag">${esc(s.file.split('.').pop())}</span></div>
+        <div class="s">${esc(s.singer)} · ${(s.size / 1048576).toFixed(1)} MB</div></div>
+        <button class="act ghost" onclick="delLib('${esc(s.songId)}')">删除</button>
+      </div>`).join('') || '<div class="empty">曲库为空，播放过的歌会自动缓存</div>';
+  } catch (e) { $('#libList').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function delLib(songId) {
+  if (!confirm('从 NAS 曲库删除这首歌？')) return;
+  await api(`/api/v1/library/${encodeURIComponent(songId)}`, { method: 'DELETE' });
+  refreshLibrary();
+}
+
+async function cacheBoard() {
+  try {
+    const { songs } = await api('/api/v1/board/songs?id=kw__255&limit=100');
+    const { added } = await api('/api/v1/library/cache', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ songs }),
+    });
+    alert(`已加入缓存队列 ${added} 首，将在后台逐一下载到 NAS`);
+  } catch (e) { alert('缓存失败：' + e.message); }
+}
+
+async function refreshSource() {
+  try {
+    const info = await api('/api/v1/lx/current');
+    if (!info.ready && !info.name) {
+      $('#sourceInfo').innerHTML = '<b>尚未导入音源脚本。</b><br>把 LX/洛雪 自定义音源脚本（.js 文件全文）粘贴到下方导入。导入后服务端即可搜索 + 解析播放链接。';
+    } else {
+      const srcs = Object.entries(info.sources || {}).map(([k, v]) => `${k}(${(v.qualitys || []).join('/')})`).join('、');
+      $('#sourceInfo').innerHTML = `<b>当前音源：${esc(info.name || '已加载')}</b><br>支持平台：${esc(srcs)}<br>状态：${info.ready ? '✅ 就绪' : '⚠️ 未就绪'}`;
+    }
+  } catch (e) { $('#sourceInfo').textContent = '读取失败：' + e.message; }
+}
+
+async function importScript() {
+  const script = $('#script').value.trim();
+  if (script.length < 32) return alert('请先粘贴完整的音源脚本内容');
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '导入中…';
+  try {
+    const r = await api('/api/v1/lx/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ script }),
+    });
+    alert(r.ok ? `导入成功：${r.name || '音源'}\n支持平台：${Object.keys(r.sources || {}).join('、')}` : '导入失败：' + r.error);
+    refreshSource();
+  } catch (e) { alert('导入失败：' + e.message); }
+  btn.disabled = false; btn.textContent = '导入 / 更新音源脚本';
+}
+
+async function removeScript() {
+  if (!confirm('移除当前音源脚本？')) return;
+  await api('/api/v1/lx/current', { method: 'DELETE' });
+  refreshSource();
+}
+
+(async function init() {
+  try {
+    const h = await api('/api/v1/health');
+    $('#serverInfo').textContent = `服务已连接${h.ready ? ' · 音源就绪' : ' · 请先在「音源」页导入脚本'}`;
+  } catch (_) { $('#serverInfo').textContent = '服务不可达，请检查地址'; }
+})();
+</script>
+</body>
+</html>

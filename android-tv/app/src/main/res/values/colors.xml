@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ktv_background">#120A22</color>
+    <color name="ktv_panel">#24153B</color>
+    <color name="ktv_accent">#FF4F9A</color>
+    <color name="ktv_text">#FFF7FC</color>
+</resources>

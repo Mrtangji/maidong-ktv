@@ -1,0 +1,9 @@
+node_modules/
+data/
+music/
+android-tv/build/
+android-tv/.gradle/
+android-tv/app/build/
+android-tv/local.properties
+android-tv/.gradle/
+*.log
