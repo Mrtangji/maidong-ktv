@@ -51,6 +51,7 @@ class LibraryCache {
     this.indexPath = path.join(dataDir, 'library-index.json');
     this.songs = {};       // songId -> {songId,title,singer,quality,file,lrc,size,cachedAt}
     this.pending = [];     // 待缓存队列
+    this.activeSongs = new Set(); // 正在下载中的 songId（防止与代理缓存并发重复落盘）
     this.active = 0;       // 当前并发
     this.failed = {};      // songId -> 最近失败原因
     this.stopped = false;
@@ -90,10 +91,26 @@ class LibraryCache {
     return Object.values(this.songs).find((s) => s.file === file) || null;
   }
 
-  /** 播放后自动缓存：已存在则跳过，失败静默（不影响播放）。 */
+  /**
+   * 等待下载中的歌曲落盘，避免两条下载链路并发写同一文件。
+   * 返回 'cached'（已入曲库）| 'idle'（没有在下载，可走代理解析）| 'busy'（等待超时）。
+   */
+  async waitUntilCached(songId, timeoutMs = 120_000) {
+    const isInflight = () => this.activeSongs.has(songId) || this.pending.some((p) => p.songId === songId);
+    const deadline = Date.now() + timeoutMs;
+    while (isInflight()) {
+      if (this.has(songId)) return 'cached';
+      if (Date.now() > deadline) return 'busy';
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return this.has(songId) ? 'cached' : 'idle';
+  }
+
+  /** 播放后自动缓存：已存在/正在下载/已在队列则跳过，失败静默（不影响播放）。 */
   autoCache(song) {
     if (!song || !song.songId) return;
-    if (this.has(song.songId) || this.pending.some((p) => p.songId === song.songId)) return;
+    if (this.has(song.songId) || this.activeSongs.has(song.songId) ||
+        this.pending.some((p) => p.songId === song.songId)) return;
     this.pending.push({ ...song, reason: 'auto' });
     this._pump();
   }
@@ -103,7 +120,8 @@ class LibraryCache {
     let added = 0;
     (Array.isArray(songs) ? songs : [songs]).forEach((song) => {
       if (!song || !song.songId) return;
-      if (this.has(song.songId) || this.pending.some((p) => p.songId === song.songId)) return;
+      if (this.has(song.songId) || this.activeSongs.has(song.songId) ||
+          this.pending.some((p) => p.songId === song.songId)) return;
       this.pending.push({ ...song, reason: 'batch' });
       added += 1;
     });
@@ -131,12 +149,14 @@ class LibraryCache {
     while (this.active < DOWNLOAD_CONCURRENCY && this.pending.length > 0 && !this.stopped) {
       const job = this.pending.shift();
       this.active += 1;
+      this.activeSongs.add(job.songId);
       this._download(job)
         .catch((err) => {
           this.failed[job.songId] = String(err && err.message || err);
         })
         .finally(() => {
           this.active -= 1;
+          this.activeSongs.delete(job.songId);
           setImmediate(() => this._pump());
         });
     }
@@ -236,6 +256,40 @@ class LibraryCache {
       };
       doGet(url, 5);
     });
+  }
+
+  /** 依据歌曲元数据与直链，得出最终落盘文件名与歌词文件名。 */
+  targetsFor(song, url) {
+    const base = `${sanitizeName(song.singer || '未知歌手')} - ${sanitizeName(song.title || song.songId)}`;
+    return { file: `${base}.${urlExtension(url)}`, lrcFile: `${base}.lrc` };
+  }
+
+  /** 代理缓存完成后登记索引（文件已由调用方落盘；lrcText 可选）。 */
+  registerFile(song, file, lrcText) {
+    try {
+      if (lrcText) {
+        try { fs.writeFileSync(path.join(this.musicDir, `${file.replace(/\.[^.]+$/, '')}.lrc`), lrcText, 'utf8'); } catch (_) { /* ignore */ }
+      }
+      const abs = path.join(this.musicDir, file);
+      const stat = fs.statSync(abs);
+      const lrcName = `${file.replace(/\.[^.]+$/, '')}.lrc`;
+      this.songs[song.songId] = {
+        songId: song.songId,
+        title: song.title || '',
+        singer: song.singer || '',
+        album: song.album || '',
+        pic: song.pic || '',
+        quality: song.quality || '128k',
+        file,
+        lrc: lrcText && fs.existsSync(path.join(this.musicDir, lrcName)) ? lrcName : null,
+        size: stat.size,
+        cachedAt: new Date().toISOString(),
+      };
+      delete this.failed[song.songId];
+      this._save();
+    } catch (e) {
+      console.error('[cache] registerFile 失败:', e.message);
+    }
   }
 
   remove(songId) {

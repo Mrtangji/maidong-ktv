@@ -18,10 +18,11 @@ const os = require('os');
 
 const { LxSandbox } = require('./src/lx-sandbox');
 const kw = require('./src/kw');
+const kwUrl = require('./src/kw-url');
 const { LibraryCache } = require('./src/cache');
 const { SongQueue } = require('./src/queue');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const PORT = Number(process.env.PORT || 8080);
 const DISCOVERY_PORT = Number(process.env.DISCOVERY_PORT || 18888);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -69,10 +70,23 @@ async function importLxScript(scriptText) {
   }
 })();
 
+// ---------- 统一直链解析：内置酷我优先（免 LX 脚本），失败回退 LX ----------
+
+function songIdOf(song) {
+  return String(song && (song.songId || song.musicId || song.songmid || song.id) || '').replace(/^MUSIC_/i, '');
+}
+
+async function resolveSongUrl(song) {
+  const viaKw = await kwUrl.resolveKwUrl(songIdOf(song), song && song.quality);
+  if (viaKw) return viaKw;
+  if (sandbox.ready) return sandbox.resolveMusicUrl(song && song.musicInfo, (song && song.quality) || '128k');
+  return null;
+}
+
 // ---------- 曲库缓存 + 点歌队列 ----------
 
 const cache = new LibraryCache(DATA_DIR, MUSIC_DIR, {
-  resolveMusicUrl: (musicInfo, quality) => sandbox.resolveMusicUrl(musicInfo, quality),
+  resolveMusicUrl: (musicInfo, quality) => resolveSongUrl({ ...musicInfo, quality }),
   fetchLyric: (songId) => kw.lyric(songId),
 });
 
@@ -136,8 +150,8 @@ function serveFile(res, filePath, headers = {}) {
   });
 }
 
-/** 带Range支持的音频文件播放（电视端拖动进度必需）。 */
-function serveMediaFile(req, res, filePath, filename) {
+/** 带Range支持的媒体文件播放（电视端拖动进度/断点续传必需）。 */
+function serveMediaFile(req, res, filePath, filename, contentType = 'audio/mpeg') {
   fs.stat(filePath, (err, stat) => {
     if (err || !stat.isFile()) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -147,7 +161,7 @@ function serveMediaFile(req, res, filePath, filename) {
     const range = req.headers.range;
     const baseHeaders = {
       'Accept-Ranges': 'bytes',
-      'Content-Type': 'audio/mpeg',
+      'Content-Type': contentType,
       'Cache-Control': 'no-cache',
       'Access-Control-Allow-Origin': '*',
     };
@@ -275,9 +289,8 @@ async function handleApi(req, res, url) {
   if (p === '/api/v1/song/url' && req.method === 'GET') {
     const song = buildSongFromQuery(q);
     if (!song) return sendJson(res, 400, { error: '缺少 songId' });
-    if (!sandbox.ready) return sendJson(res, 409, { error: '尚未导入 LX 音源脚本（/api/v1/lx/import）' });
-    const url = await sandbox.resolveMusicUrl(song.musicInfo, song.quality);
-    if (!url) return sendJson(res, 502, { error: '解析失败：音源脚本未返回有效链接' });
+    const url = await resolveSongUrl(song);
+    if (!url) return sendJson(res, 502, { error: '解析失败：无可用播放地址（内置酷我与 LX 脚本均未命中）' });
     cache.autoCache(song);
     return sendJson(res, 200, { songId: song.songId, quality: song.quality, url, cached: cache.has(song.songId) });
   }
@@ -291,7 +304,6 @@ async function handleApi(req, res, url) {
     let payload;
     try { payload = JSON.parse(body.toString('utf8')); } catch (_) { return sendJson(res, 400, { error: 'JSON 解析失败' }); }
     const songs = Array.isArray(payload) ? payload : (payload.songs || [payload]);
-    if (!sandbox.ready) return sendJson(res, 409, { error: '尚未导入 LX 音源脚本' });
     const added = cache.batchCache(songs);
     return sendJson(res, 200, { ok: true, added, status: cache.status() });
   }
@@ -342,20 +354,185 @@ function handleStream(req, res, url) {
   const song = buildSongFromQuery(url.searchParams);
   if (!song) return sendJson(res, 400, { error: '缺少 songId' });
 
-  // 1) 曲库缓存命中 → 直接播 NAS 上的文件（支持 Range）
-  const cached = cache.songs[song.songId];
-  if (cached && cache.has(song.songId)) {
-    return serveMediaFile(req, res, path.join(MUSIC_DIR, cached.file), path.basename(cached.file));
+  (async () => {
+    // 1) 曲库缓存命中 → 直接播 NAS 上的文件（支持 Range）
+    const serve = () => {
+      const cached = cache.songs[song.songId];
+      if (cached && cache.has(song.songId)) {
+        serveMediaFile(req, res, path.join(MUSIC_DIR, cached.file), path.basename(cached.file));
+        return true;
+      }
+      return false;
+    };
+    if (serve()) return;
+
+    // 2) 该曲已在下载中 → 等它落盘后直接从缓存服务（避免并发重复下载）
+    const state = await cache.waitUntilCached(song.songId, 120_000);
+    if (state === 'cached' && serve()) return;
+    if (state === 'busy') return sendJson(res, 503, { error: 'NAS 正在缓存该歌曲，请稍后重试' });
+
+    // 3) 未缓存 → 解析直链 → NAS 边代下载给客户端、边落盘入曲库（首次稍慢，之后走局域网）
+    const remoteUrl = await resolveSongUrl(song);
+    if (!remoteUrl) return sendJson(res, 502, { error: '解析失败：无可用播放地址' });
+    const { file } = cache.targetsFor(song, remoteUrl);
+    const target = path.join(MUSIC_DIR, file);
+    const lrcPromise = kw.lyric(song.songId).catch(() => null); // 歌词尽力而为，与下载并行
+    cache.activeSongs.add(song.songId); // 代理缓存期间，阻止 autoCache 重复下载同一文件
+    try {
+      await proxyAndCache(remoteUrl, res, { targetPath: target, contentType: 'audio/mpeg' });
+      const lrcText = await lrcPromise;
+      cache.registerFile(song, file, lrcText);
+    } catch (e) {
+      console.error('[stream] 代理缓存失败:', e.message);
+      if (!res.headersSent) sendJson(res, 502, { error: '拉取失败: ' + e.message });
+      else res.end();
+    } finally {
+      cache.activeSongs.delete(song.songId);
+    }
+  })().catch((e) => {
+    console.error('[stream]', e);
+    if (!res.headersSent) sendJson(res, 500, { error: e.message });
+  });
+}
+
+/**
+ * 代理并缓存：从 remoteUrl 拉流，转发给客户端的同时写入 targetPath(.part)，
+ * 完成后原子改名。客户端中途断开（切歌）不中断后台落盘。
+ */
+function proxyAndCache(remoteUrl, res, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const targetPath = opts.targetPath;
+    const doGet = (u, redirectsLeft) => {
+      let target_;
+      try { target_ = new URL(u); } catch (e) { return reject(new Error('invalid url')); }
+      const lib = target_.protocol === 'https:' ? require('https') : http;
+      const up = lib.request({
+        hostname: target_.hostname,
+        port: target_.port || (target_.protocol === 'https:' ? 443 : 80),
+        path: target_.pathname + target_.search,
+        method: 'GET',
+        headers: { 'User-Agent': opts.ua || 'MaidongKTV/1.0', Referer: target_.origin },
+        timeout: 30_000,
+      }, (upRes) => {
+        try {
+        if (upRes.statusCode >= 300 && upRes.statusCode < 400 && upRes.headers.location && redirectsLeft > 0) {
+          upRes.resume();
+          let next;
+          try { next = new URL(upRes.headers.location, target_).toString(); } catch (_) { return reject(new Error('bad redirect')); }
+          return doGet(next, redirectsLeft - 1);
+        }
+        if (upRes.statusCode !== 200) {
+          upRes.resume();
+          return reject(new Error(`上游 HTTP ${upRes.statusCode}`));
+        }
+        const out = targetPath ? fs.createWriteStream(`${targetPath}.part`) : null;
+        if (!res.headersSent) {
+          const headers = {
+            'Accept-Ranges': 'bytes',
+            'Content-Type': opts.contentType || 'application/octet-stream',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*',
+          };
+          const len = parseInt(upRes.headers['content-length'] || '', 10);
+          if (Number.isFinite(len) && len > 0) headers['Content-Length'] = len;
+          res.writeHead(200, headers);
+        }
+        let clientGone = false;
+        res.on('close', () => { clientGone = true; });
+        upRes.on('data', (chunk) => {
+          if (out) out.write(chunk);
+          if (!clientGone && !res.destroyed) res.write(chunk); // 局域网场景不做背压反压
+        });
+        upRes.on('error', finish);
+        upRes.on('end', () => finish(null));
+        function finish(err) {
+          if (out) {
+            out.end(() => {
+              if (err && !clientGone) {
+                try { fs.unlinkSync(`${targetPath}.part`); } catch (_) { /* ignore */ }
+                return reject(err);
+              }
+              if (targetPath) {
+                try {
+                  fs.renameSync(`${targetPath}.part`, targetPath);
+                } catch (e) { if (!clientGone) return reject(e); }
+              }
+              resolve();
+              if (!clientGone) res.end();
+            });
+          } else {
+            if (err && !clientGone) return reject(err);
+            resolve();
+            if (!clientGone) res.end();
+          }
+        }
+        } catch (err) {
+          try { upRes.destroy(); } catch (_) { /* ignore */ }
+          reject(err);
+        }
+      });
+      up.on('timeout', () => up.destroy(new Error('上游超时')));
+      up.on('error', reject);
+      up.end();
+    };
+    doGet(remoteUrl, 5);
+  });
+}
+
+// ---------- /ts/<filename>：muse.db 原生曲库 .ts 缓存（与 muse.db 条目同名对应） ----------
+
+const TS_DIR = path.join(MUSIC_DIR, 'ts');
+const tsInflight = new Map(); // filename -> Promise
+
+function tsContentType(filename) {
+  return /\.(ts|ls)$/i.test(filename) ? 'video/mp2t' : 'application/octet-stream';
+}
+
+async function handleTs(req, res, filename, query) {
+  if (!/^[\w\u4e00-\u9fa5\-. ]+\.(ts|ls)$/i.test(filename)) {
+    return sendJson(res, 400, { error: '非法文件名' });
+  }
+  fs.mkdirSync(TS_DIR, { recursive: true });
+  const target = path.join(TS_DIR, filename);
+
+  // 1) NAS 缓存命中 → 局域网直接服务（支持 Range 断点续传）
+  if (fs.existsSync(target) && fs.statSync(target).size > 0) {
+    return serveMediaFile(req, res, target, filename, tsContentType(filename));
   }
 
-  // 2) 未缓存 → 解析后 302 到直链，同时后台缓存到 NAS
-  if (!sandbox.ready) return sendJson(res, 409, { error: '尚未导入 LX 音源脚本' });
-  sandbox.resolveMusicUrl(song.musicInfo, song.quality).then((remoteUrl) => {
-    if (!remoteUrl) return sendJson(res, 502, { error: '解析失败：音源脚本未返回有效链接' });
-    cache.autoCache(song);
-    res.writeHead(302, { Location: remoteUrl, 'Access-Control-Allow-Origin': '*' });
-    res.end();
-  }).catch((e) => sendJson(res, 502, { error: e.message }));
+  // 2) 未命中 → 需要 src（app 解析好的 CDN 直链），NAS 代下载并缓存
+  const src = query.get('src') || '';
+  if (!/^https?:\/\//.test(src)) {
+    return sendJson(res, 404, { error: 'NAS 未缓存该歌曲，且缺少 src 源地址' });
+  }
+
+  // 并发去重：同文件已在下载中 → 等它完成后从缓存服务
+  const inflight = tsInflight.get(filename);
+  if (inflight) {
+    try { await inflight; } catch (_) { /* ignore */ }
+    if (fs.existsSync(target) && fs.statSync(target).size > 0) {
+      return serveMediaFile(req, res, target, filename, tsContentType(filename));
+    }
+    return sendJson(res, 502, { error: 'NAS 代下载失败，请重试' });
+  }
+
+  let done, fail;
+  const promise = new Promise((r, j) => { done = r; fail = j; });
+  tsInflight.set(filename, promise);
+  try {
+    console.log(`[ts] 缓存未命中，代下载: ${filename}`);
+    await proxyAndCache(src, res, { targetPath: target, contentType: tsContentType(filename) });
+    const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
+    console.log(`[ts] 已缓存: ${filename} (${(size / 1024 / 1024).toFixed(1)}MB)`);
+    done();
+  } catch (e) {
+    fail(e);
+    console.error(`[ts] 代下载失败: ${filename}`, e.message);
+    if (!res.headersSent) sendJson(res, 502, { error: '代下载失败: ' + e.message });
+    else res.end();
+  } finally {
+    tsInflight.delete(filename);
+  }
 }
 
 function handleStatic(req, res, url) {
@@ -401,6 +578,14 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/stream') {
     handleStream(req, res, url);
+    return;
+  }
+  const tsMatch = url.pathname.match(/^\/ts\/(.+)$/);
+  if (tsMatch && req.method === 'GET') {
+    handleTs(req, res, decodeURIComponent(tsMatch[1]), url.searchParams).catch((e) => {
+      console.error('[ts]', e);
+      if (!res.headersSent) sendJson(res, 500, { error: e.message });
+    });
     return;
   }
   handleStatic(req, res, url);
