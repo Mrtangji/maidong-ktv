@@ -105,6 +105,11 @@ class BulkDownloader {
     return Array.from(this._catalogIndex().values());
   }
 
+  /** 按 muse 编号（no）查目录条目。 */
+  entryByNo(no) {
+    return this.catalogEntries().find((e) => e.no === no) || null;
+  }
+
   catalogCount() {
     try { return fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).length; }
     catch (_) { return 0; }

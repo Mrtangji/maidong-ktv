@@ -41,6 +41,7 @@ class SongQueue {
       pic: song.pic || '',
       quality: song.quality || '128k',
       musicInfo: song.musicInfo || null,
+      videoUrl: song.videoUrl || null,   // 服务器 MV（HLS），网页端 hls.js 播放
       addedAt: new Date().toISOString(),
     };
     this.items.push(item);

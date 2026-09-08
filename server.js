@@ -98,6 +98,19 @@ const queue = new SongQueue(DATA_DIR);
 const BULK_DIR = process.env.BULK_DIR || path.join(MUSIC_DIR, 'ts');
 const bulk = new BulkDownloader(DATA_DIR, BULK_DIR);
 
+// MV → HLS 转封装缓存（网页端 <video>+hls.js 播放；骏耀同思路，-c copy 秒级）
+const { HlsCache } = require('./src/hls');
+const hlsCache = new HlsCache(process.env.HLS_DIR || path.join(DATA_DIR, 'hls'));
+
+/** 按 muse 编号找 MV 源文件：先查原编号名缓存（music/ts），再查批量下载的「歌手 - 歌名.ts」。 */
+function findMvSource(no) {
+  const entry = bulk.entryByNo(no);
+  if (!entry) return null;
+  const orig = path.join(TS_DIR, entry.file);
+  if (fs.existsSync(orig) && fs.statSync(orig).size > 0) return orig;
+  return bulk.findExistingByMuseFile(entry.file);
+}
+
 // muse.db 排行榜（与安卓端同源，只读）
 const museRank = new MuseRank(DATA_DIR, MUSIC_DIR);
 
@@ -427,6 +440,29 @@ async function handleApi(req, res, url) {
     if (!no) return sendJson(res, 400, { error: '缺少 no' });
     const title = String(entry.title || '');
     const singer = String(entry.singer || '');
+    // 服务器已缓存该 MV → 直接入队视频条目（网页端 hls.js 播放，天然支持进度/切歌）；
+    // 同时按「歌名 歌手」搜酷我拿 songId/musicInfo，歌词面板照常工作。
+    const mvSrc = findMvSource(no);
+    if (mvSrc) {
+      const museEntry = bulk.entryByNo(no) || {};
+      const base = {
+        songId: 'mv_' + no,
+        title: museEntry.title || title,
+        singer: museEntry.singer || singer,
+        videoUrl: '/hls/' + no + '/index.m3u8',
+      };
+      try {
+        const songs = await kw.search([base.title, base.singer].filter(Boolean).join(' '), 1, 1);
+        const pick = songs.find((s) => s && s.songId);
+        if (pick) {
+          base.songId = pick.songId;
+          base.musicInfo = pick.musicInfo || kw.musicInfo(pick.songId, base.title, base.singer);
+        }
+      } catch (_) { /* 歌词匹配失败不影响视频播放 */ }
+      const item = queue.add(base);
+      if (!item) return sendJson(res, 200, { ok: false, error: '歌曲已在队列中' });
+      return sendJson(res, 200, { ok: true, item, items: queue.list() });
+    }
     try {
       const keyword = [title, singer].filter(Boolean).join(' ');
       const songs = await kw.search(keyword, 1, 5);
@@ -592,6 +628,19 @@ function proxyAndCache(remoteUrl, res, opts = {}) {
 const TS_DIR = path.join(MUSIC_DIR, 'ts');
 const tsInflight = new Map(); // filename -> Promise
 
+/** 网页端 MV 播放：/hls/<no>/index.m3u8 与分片。首次访问触发 ffmpeg 转封装（copy，秒级）。 */
+async function handleHls(req, res, no, file) {
+  const src = findMvSource(no);
+  if (!src) return sendJson(res, 404, { error: '服务器未缓存该 MV' });
+  if (file === 'index.m3u8') {
+    const playlist = await hlsCache.ensure(src, no);
+    return serveMediaFile(req, res, playlist, no + '.m3u8', 'application/vnd.apple.mpegurl');
+  }
+  const seg = hlsCache.segmentPath(no, file);
+  if (!seg) return sendJson(res, 404, { error: '分片不存在' });
+  return serveMediaFile(req, res, seg, file, 'video/mp2t');
+}
+
 function tsContentType(filename) {
   return /\.(ts|ls)$/i.test(filename) ? 'video/mp2t' : 'application/octet-stream';
 }
@@ -697,6 +746,14 @@ const server = http.createServer((req, res) => {
   if (tsMatch && req.method === 'GET') {
     handleTs(req, res, decodeURIComponent(tsMatch[1]), url.searchParams).catch((e) => {
       console.error('[ts]', e);
+      if (!res.headersSent) sendJson(res, 500, { error: e.message });
+    });
+    return;
+  }
+  const hlsMatch = url.pathname.match(/^\/hls\/([\w-]+)(?:\/([\w.-]+))?$/);
+  if (hlsMatch && req.method === 'GET') {
+    handleHls(req, res, hlsMatch[1], hlsMatch[2] || 'index.m3u8').catch((e) => {
+      console.error('[hls]', e);
       if (!res.headersSent) sendJson(res, 500, { error: e.message });
     });
     return;

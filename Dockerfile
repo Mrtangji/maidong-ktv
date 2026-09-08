@@ -8,8 +8,8 @@ COPY server.js ./
 COPY src ./src
 COPY web ./web
 
-# 曲库与数据目录（docker volume / NAS bind mount 挂载点）
-RUN mkdir -p /music /data
+# ffmpeg：网页端 MV 播放需要把 .ts 转封装成 HLS（-c copy，不吃 CPU）
+RUN apk add --no-cache ffmpeg && mkdir -p /music /data
 
 ENV PORT=8080 \
     DISCOVERY_PORT=18888 \

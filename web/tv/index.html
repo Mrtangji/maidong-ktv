@@ -92,7 +92,12 @@
     background: rgba(0,0,0,.6); font-size: 14px; z-index: 2;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #playerWin canvas.viz { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; }
+  #playerWin canvas.viz { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; z-index: 1; }
+  /* MV 视频层：hls.js 播放服务器 MV；歌词/字幕面板（z-index 更高）叠加其上 */
+  #playerWin video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; background: #000; display: none; z-index: 0;
+  }
   #npOverlay {
     position: absolute; left: 0; right: 0; bottom: 0; padding: 10px;
     background: rgba(13,10,26,.8); z-index: 2;
@@ -295,6 +300,7 @@
 <div id="home" class="page show" data-page-node-id="STTSnxqICmNRPkPFUpxCJP">
   <div id="homeLeft" data-page-node-id="Mr2Xbyi4aSHJV8I9vBwEEA">
     <div id="playerWin" data-page-node-id="qwwEFK6CbdsXtsHEg1ZdXK">
+      <video id="video" playsinline data-page-node-id="mvvideo1"></video>
       <canvas class="viz" id="vizHome" data-page-node-id="GI6UYacnst8Raz3jdXLAzC"></canvas>
       <div id="npTop" data-page-node-id="4bAur8zwxxf6PJd0CQ8QEF">当前：未播放&nbsp;&nbsp;&nbsp;下一首：无</div>
       <div id="lyricsHome" data-page-node-id="a18UJx0cCBx0oNFCPdnUaY"><div id="lyricHomeInner" data-page-node-id="3NO1WRMiOCcMteKmPgIjqM"></div></div>
@@ -412,6 +418,7 @@
 
 <audio id="audio" preload="auto" data-page-node-id="0RmAhLGtLE3T8pl2zfk8Fm"></audio>
 
+<script src="/tv/assets/hls.min.js"></script>
 <script>
 'use strict';
 const $ = (s) => document.querySelector(s);
@@ -788,15 +795,14 @@ async function ensureLib() {
 
 // ---------- 点歌 / 播放 ----------
 async function orderSong(s) {
-  // muse.db 榜单/曲库条目：不在网页端直接播放（MV 需视频解码，网页播放器只播音频）
-  if (String(s.songId || '').startsWith('ts_')) { toast('MV 曲目请在电视端播放'); return; }
-  if (String(s.songId || '').startsWith('mus_')) {
-    // 按曲库条目点唱：服务端按「歌名 歌手」自动匹配在线版本加入队列
+  // muse.db 榜单/服务器曲库条目：统一走 by-no —— 服务端有缓存 → MV(HLS)视频条目，没有 → 自动匹配在线版
+  if (String(s.songId || '').startsWith('ts_') || String(s.songId || '').startsWith('mus_')) {
+    const no = s.museNo || String(s.songId).replace(/^(ts_|mus_)/, '');
     try {
       await api('/api/v1/queue/by-no', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ no: s.museNo || String(s.songId).slice(4), title: s.title, singer: s.singer }),
+        body: JSON.stringify({ no, title: s.title, singer: s.singer }),
       });
       toast(`已点「${s.title}」`);
       refreshQueue();
@@ -815,6 +821,29 @@ async function orderSong(s) {
     if (!currentSong) playNext();
   } catch (e) { toast('点歌失败：' + e.message); }
 }
+let hlsInstance = null;
+function destroyHls() {
+  if (hlsInstance) { try { hlsInstance.destroy(); } catch (e) {} hlsInstance = null; }
+}
+/** 服务器 MV（HLS）：<video> + hls.js 播放；歌词面板照常叠加。 */
+function playVideo(song) {
+  $('#audio').pause();
+  const v = $('#video');
+  $('#vizHome').style.display = 'none';
+  v.style.display = 'block';
+  destroyHls();
+  if (window.Hls && Hls.isSupported()) {
+    hlsInstance = new Hls({ manifestLoadingTimeOut: 30000, manifestLoadingMaxRetry: 3 });
+    hlsInstance.loadSource(song.videoUrl);
+    hlsInstance.attachMedia(v);
+    hlsInstance.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) { toast('MV 加载失败'); songEnded(); }
+    });
+  } else {
+    v.src = song.videoUrl;   // Safari / 部分电视内核原生支持 HLS
+  }
+  v.play().catch(() => {});
+}
 async function playNext() {
   try {
     const { items } = await api('/api/v1/queue');
@@ -826,8 +855,16 @@ async function playNext() {
     $('#npSinger').textContent = sg;
     $('#subNp .t').textContent = t;
     $('#subNp .s').textContent = sg;
-    $('#audio').src = `/stream?songId=${encodeURIComponent(song.songId)}&title=${encodeURIComponent(t)}&singer=${encodeURIComponent(sg)}&quality=128k`;
-    $('#audio').play().catch(() => {});
+    if (song.videoUrl) {
+      playVideo(song);
+    } else {
+      const v = $('#video');
+      v.pause(); v.style.display = 'none'; v.removeAttribute('src');
+      destroyHls();
+      $('#vizHome').style.display = '';
+      $('#audio').src = `/stream?songId=${encodeURIComponent(song.songId)}&title=${encodeURIComponent(t)}&singer=${encodeURIComponent(sg)}&quality=128k`;
+      $('#audio').play().catch(() => {});
+    }
     $('#btnPause').textContent = '暂停';
     loadLyric(song.songId);
     const k = favKey(song);
@@ -840,6 +877,9 @@ async function playNext() {
 function stopPlayback(msg) {
   currentSong = null;
   $('#audio').pause(); $('#audio').removeAttribute('src');
+  const v = $('#video');
+  v.pause(); destroyHls(); v.removeAttribute('src'); v.load(); v.style.display = 'none';
+  $('#vizHome').style.display = '';
   $('#npTitle').textContent = '未播放';
   $('#npSinger').textContent = msg || '';
   $('#subNp .t').textContent = '未播放';
@@ -915,6 +955,11 @@ audio.addEventListener('timeupdate', () => {
   drawViz();
 });
 audio.addEventListener('ended', songEnded);
+$('#video').addEventListener('ended', songEnded);
+/** 当前应控制的媒体元素：MV 视频模式 → video，普通歌 → audio。 */
+function activeMedia() {
+  return $('#video').style.display === 'block' ? $('#video') : audio;
+}
 
 // ---------- 播放窗背景律动（无 MV 时的可视化） ----------
 function setupViz(canvas) {
@@ -939,13 +984,14 @@ requestAnimationFrame(drawViz);
 
 // ---------- 顶栏控制 ----------
 $('#btnPause').addEventListener('click', () => {
-  if (!audio.src) { playNext(); return; }
-  if (audio.paused) { audio.play(); $('#btnPause').textContent = '暂停'; }
-  else { audio.pause(); $('#btnPause').textContent = '继续'; }
+  const m = activeMedia();
+  if (!m.src && m === audio) { playNext(); return; }
+  if (m.paused) { m.play(); $('#btnPause').textContent = '暂停'; }
+  else { m.pause(); $('#btnPause').textContent = '继续'; }
 });
 $('#btnNext').addEventListener('click', songEnded);
 $('#btnReplay').addEventListener('click', () => {
-  if (currentSong) { audio.currentTime = 0; audio.play(); toast('重唱当前歌曲'); }
+  if (currentSong) { const m = activeMedia(); m.currentTime = 0; m.play(); toast('重唱当前歌曲'); }
 });
 $('#btnVocal').addEventListener('click', () => {
   vocalOn = !vocalOn;
@@ -953,7 +999,7 @@ $('#btnVocal').addEventListener('click', () => {
   toast(vocalOn ? '原唱模式' : '伴唱模式（当前音源为原唱音轨）');
 });
 $('#btnTone').addEventListener('click', () => { $('#mask').classList.add('show'); $('#toneModal').classList.add('show'); });
-$('#volSlider').addEventListener('input', () => { audio.volume = $('#volSlider').value / 100; });
+$('#volSlider').addEventListener('input', () => { const v = $('#volSlider').value / 100; audio.volume = v; $('#video').volume = v; });
 $('#btnOrder').addEventListener('click', () => { refreshQueue(); $('#mask').classList.add('show'); $('#queueModal').classList.add('show'); });
 // 全屏时隐藏顶部 logo
 document.addEventListener('fullscreenchange', () => {
