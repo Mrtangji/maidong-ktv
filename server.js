@@ -23,6 +23,34 @@ const { LibraryCache } = require('./src/cache');
 const { BulkDownloader } = require('./src/bulk');
 const { SongQueue } = require('./src/queue');
 const { MuseRank } = require('./src/muse-rank');
+const { KtvApi } = require('./src/vendor-ktv-api');
+
+// ----- muse 云曲库换链（和音元官方接口，仅在服务端调用） -----
+// 客户端通过 /api/v1/muse/url 间接换链，本机设备不接触 kk456/ac16/cherryonline 域名，
+// 官方的免费版提示/设备识别全部发生在 NAS 这台"新设备"上。
+const museApi = new KtvApi({ debug: false });
+const museUrlCache = new Map();   // no -> { url, at }（CDN 签名会过期，缓存 5 分钟）
+const museUrlInflight = new Map();
+const MUSE_URL_TTL = 5 * 60 * 1000;
+
+function resolveMuseUrl(no) {
+  const hit = museUrlCache.get(no);
+  if (hit && Date.now() - hit.at < MUSE_URL_TTL) return Promise.resolve(hit.url);
+  if (museUrlInflight.has(no)) return museUrlInflight.get(no);
+  const job = (async () => {
+    try {
+      const cdn = await museApi.getSongUrl(no, '720', false);
+      if (!cdn) return null;
+      const path = '/ts/' + encodeURIComponent(no + '.ts') + '?src=' + encodeURIComponent(cdn);
+      museUrlCache.set(no, { url: path, at: Date.now() });
+      return path;
+    } finally {
+      museUrlInflight.delete(no);
+    }
+  })();
+  museUrlInflight.set(no, job);
+  return job;
+}
 
 const VERSION = '1.1.0';
 const PORT = Number(process.env.PORT || 8080);
@@ -343,6 +371,14 @@ async function handleApi(req, res, url) {
     const friendly = bulk.findExistingByMuseFile(file);
     if (friendly) return sendJson(res, 200, { exists: true, file: path.basename(friendly) });
     return sendJson(res, 200, { exists: false });
+  }
+  // 安卓端点播换链：服务端调官方接口拿 CDN 直链，返回 NAS /ts 代理地址（未缓存会代下载并入库）
+  if (p === '/api/v1/muse/url' && req.method === 'GET') {
+    const no = (q.get('no') || '').trim();
+    if (!/^\d{4,12}$/.test(no)) return sendJson(res, 400, { ok: false, error: '非法编号' });
+    const pathU = await resolveMuseUrl(no);
+    if (!pathU) return sendJson(res, 502, { ok: false, error: '换链失败' });
+    return sendJson(res, 200, { ok: true, path: pathU });
   }
   // muse.db 原生曲库（bulk 批量下载的 .ts / MV），服务器分页浏览
   if (p === '/api/v1/library/ts' && req.method === 'GET') {
