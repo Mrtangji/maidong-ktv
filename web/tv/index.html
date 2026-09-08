@@ -392,9 +392,15 @@
     <div id="bulkBar" style="height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .5s"></div>
   </div>
   <div id="bulkDetail" style="font-size:12px;color:rgba(224,224,224,.55);min-height:18px"></div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:12px;color:rgba(224,224,224,.7)">
+    下载区间（第 N 首 ~ 第 M 首，按最常唱排序）：
+    <input id="bulkFrom" type="number" min="1" value="1" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px">
+    ~
+    <input id="bulkTo" type="number" min="1" value="10000" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px">
+  </div>
   <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
     <div class="crumb-btn focusable" id="bulkImport" tabindex="0">① 导入 muse.db</div>
-    <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0">② 开始下载一万首</div>
+    <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0">② 开始下载</div>
     <div class="crumb-btn focusable" id="bulkStop" tabindex="0">停止</div>
     <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto">关闭</div>
   </div>
@@ -490,7 +496,8 @@ function renderBulk(st) {
     bar.style.width = '0';
     return;
   }
-  info.innerHTML = `曲库目录：<b>${st.catalog}</b> 首（已按最常唱排序）` +
+  const rangeTxt = (st.from && st.to) ? ` · 区间 第 ${st.from} ~ ${st.to} 首` : '';
+  info.innerHTML = `曲库目录：<b>${st.catalog}</b> 首（已按最常唱排序）` + rangeTxt +
     (st.running ? ' · <span style="color:var(--accent)">下载中…</span>' : (st.total ? ' · 已停止' : ''));
   const pct = st.total ? Math.round((st.done + st.failed) / st.total * 100) : 0;
   bar.style.width = pct + '%';
@@ -523,9 +530,11 @@ $('#bulkImport').addEventListener('click', async () => {
   pollBulk();
 });
 $('#bulkStart').addEventListener('click', async () => {
+  const from = Math.max(1, parseInt($('#bulkFrom').value, 10) || 1);
+  const to = Math.max(from, parseInt($('#bulkTo').value, 10) || (from + 9999));
   try {
-    const r = await api('/api/v1/bulk/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 10000 }) });
-    if (!r.ok) toast(r.error || '启动失败'); else toast(`批量下载已启动：${r.total} 首（最常唱优先）`);
+    const r = await api('/api/v1/bulk/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to }) });
+    if (!r.ok) toast(r.error || '启动失败'); else toast(`批量下载已启动：第 ${r.from} ~ ${r.to} 首，共 ${r.total} 首（最常唱优先）`);
   } catch (e) { toast('启动失败：' + e.message); }
   pollBulk();
 });

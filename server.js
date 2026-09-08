@@ -331,9 +331,9 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/v1/bulk/start' && req.method === 'POST') {
     const body = await readBody(req);
-    let limit = 10000;
-    try { limit = Number(JSON.parse(body.toString('utf8') || '{}').limit) || 10000; } catch (_) {}
-    const r = bulk.start(limit);
+    let opts = {};
+    try { opts = JSON.parse(body.toString('utf8') || '{}') || {}; } catch (_) {}
+    const r = bulk.start(opts);
     return sendJson(res, r.ok ? 200 : 409, r);
   }
   if (p === '/api/v1/bulk/stop' && req.method === 'POST') {

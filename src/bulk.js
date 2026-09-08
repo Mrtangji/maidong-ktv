@@ -126,17 +126,30 @@ class BulkDownloader {
     return n;
   }
 
-  /** 启动批量下载（已在跑则拒绝）。 */
-  start(limit = 10000) {
+  /**
+   * 启动批量下载（已在跑则拒绝）。
+   * @param {object} opts {from, to} 1-based 行号区间（含两端，按最常唱排序）；
+   *   兼容旧参数 {limit}（等价 from=1, to=limit）。
+   */
+  start(opts = {}) {
+    const n = this.catalogCount();
     if (this.state.running) return { ok: false, error: '批量下载已在进行中' };
-    if (!this.catalogCount()) return { ok: false, error: '尚未导入 muse.db 曲库（先执行导入）' };
+    if (!n) return { ok: false, error: '尚未导入 muse.db 曲库（先执行导入）' };
+    const limit = Number(opts.limit) || 0;
+    let from = Math.max(1, Math.floor(Number(opts.from) || (limit ? 1 : 1)));
+    let to = Math.floor(Number(opts.to) || (limit || n));
+    if (!Number.isFinite(from) || from < 1) from = 1;
+    if (!Number.isFinite(to) || to < from) to = Math.min(from + 9999, n);
+    to = Math.min(to, n);
     this.state.running = true;
     this.state.stopRequested = false;
-    this.state.total = Math.min(limit, this.catalogCount());
+    this.state.total = to - from + 1;
     this.state.done = 0;
     this.state.failed = 0;
     this.state.lastError = '';
     this.state.startedAt = new Date().toISOString();
+    this.state.from = from;
+    this.state.to = to;
     this.state.limit = this.state.total;
     this._saveState();
     fs.mkdirSync(this.musicTsDir, { recursive: true });
@@ -146,7 +159,7 @@ class BulkDownloader {
       this.state.running = false;
       this._saveState();
     });
-    return { ok: true, total: this.state.total };
+    return { ok: true, total: this.state.total, from, to };
   }
 
   stop() {
@@ -166,6 +179,8 @@ class BulkDownloader {
       current: this.state.current,
       lastError: this.state.lastError,
       startedAt: this.state.startedAt,
+      from: this.state.from || 1,
+      to: this.state.to || 0,
     };
   }
 
@@ -188,8 +203,10 @@ class BulkDownloader {
     const { KtvApi } = require(this.apiJsPath);
     const api = new KtvApi({ debug: false });
 
-    // 读取目录前 total 行
-    const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).slice(0, this.state.total);
+    // 读取目录的 [from, to] 区间（1-based，含两端）
+    const from = Math.max(1, Number(this.state.from) || 1);
+    const to = Math.min(this.catalogCount(), Number(this.state.to) || from + 9999);
+    const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).slice(from - 1, to);
     let sinceSave = 0;
 
     const worker = async (queue) => {
