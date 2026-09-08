@@ -447,6 +447,14 @@ async function handleApi(req, res, url) {
   if (p === '/api/v1/bulk/stop' && req.method === 'POST') {
     return sendJson(res, 200, bulk.stop());
   }
+  // 扫库补缺：全库扫描已下载文件，缺失/损坏（ts 校验不过）的自动补下
+  if (p === '/api/v1/bulk/scan' && req.method === 'POST') {
+    const body = await readBody(req);
+    let opts = {};
+    try { opts = JSON.parse(body.toString('utf8') || '{}') || {}; } catch (_) {}
+    const r = bulk.start({ mode: 'scan', verify: opts.verify !== false });
+    return sendJson(res, r.ok ? 200 : 409, r);
+  }
   const libRemove = p.match(/^\/api\/v1\/library\/([^/]+)$/);
   if (libRemove && req.method === 'DELETE') {
     const ok = cache.remove(decodeURIComponent(libRemove[1]));

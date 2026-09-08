@@ -69,6 +69,10 @@ class BulkDownloader {
       startedAt: null,
       limit: 0,
       stopRequested: false,
+      mode: 'range',        // range=按区间下载 | scan=扫库补缺
+      phase: '',            // 扫库补缺的执行阶段：scan → download → 空（结束）
+      verify: true,         // 扫库时是否校验已下载 ts 完整性
+      scanned: 0, scanTotal: 0, have: 0, invalid: 0, removed: 0,
     };
     this._loadState();
   }
@@ -152,21 +156,28 @@ class BulkDownloader {
 
   /**
    * 启动批量下载（已在跑则拒绝）。
-   * @param {object} opts {from, to} 1-based 行号区间（含两端，按最常唱排序）；
-   *   兼容旧参数 {limit}（等价 from=1, to=limit）。
+   * @param {object} opts 普通模式 {from, to} 1-based 行号区间（含两端，按最常唱排序），
+   *   兼容旧参数 {limit}（等价 from=1, to=limit）；
+   *   扫库补缺 {mode:'scan', verify?:bool}：全库扫描已下载文件，
+   *   缺失与损坏（ts 完整性校验不过）的自动进入下载队列补齐。
    */
   start(opts = {}) {
     const n = this.catalogCount();
     if (this.state.running) return { ok: false, error: '批量下载已在进行中' };
     if (!n) return { ok: false, error: '尚未导入 muse.db 曲库（先执行导入）' };
+    const scan = opts.mode === 'scan';
     const limit = Number(opts.limit) || 0;
     let from = Math.max(1, Math.floor(Number(opts.from) || (limit ? 1 : 1)));
     let to = Math.floor(Number(opts.to) || (limit || n));
     if (!Number.isFinite(from) || from < 1) from = 1;
     if (!Number.isFinite(to) || to < from) to = Math.min(from + 9999, n);
     to = Math.min(to, n);
+    if (scan) { from = 1; to = n; }   // 扫库补缺永远覆盖全库
     this.state.running = true;
     this.state.stopRequested = false;
+    this.state.mode = scan ? 'scan' : 'range';
+    this.state.phase = scan ? 'scan' : 'download';
+    this.state.verify = opts.verify !== false;
     this.state.total = to - from + 1;
     this.state.done = 0;
     this.state.failed = 0;
@@ -175,6 +186,10 @@ class BulkDownloader {
     this.state.from = from;
     this.state.to = to;
     this.state.limit = this.state.total;
+    if (scan) {
+      this.state.scanTotal = this.state.total;
+      this.state.scanned = 0; this.state.have = 0; this.state.invalid = 0; this.state.removed = 0;
+    }
     this._saveState();
     fs.mkdirSync(this.bulkDir, { recursive: true });
     // 后台跑，不阻塞请求
@@ -183,7 +198,7 @@ class BulkDownloader {
       this.state.running = false;
       this._saveState();
     });
-    return { ok: true, total: this.state.total, from, to };
+    return { ok: true, total: this.state.total, from, to, mode: this.state.mode };
   }
 
   stop() {
@@ -197,6 +212,14 @@ class BulkDownloader {
       muse: this.museExists(),
       catalog: this.catalogCount(),
       running: this.state.running,
+      mode: this.state.mode || 'range',
+      phase: this.state.phase || '',
+      verify: this.state.verify !== false,
+      scanned: this.state.scanned || 0,
+      scanTotal: this.state.scanTotal || 0,
+      have: this.state.have || 0,
+      invalid: this.state.invalid || 0,
+      removed: this.state.removed || 0,
       total: this.state.total,
       done: this.state.done,
       failed: this.state.failed,
@@ -244,6 +267,110 @@ class BulkDownloader {
     return null;
   }
 
+  /** 下载目录中所有已存在的 .ts 文件名集合（一次 readdir，扫描比对 O(1)）。 */
+  _scanDirSet() {
+    const set = new Set();
+    for (const f of fs.readdirSync(this.bulkDir)) {
+      if (f.endsWith('.ts')) set.add(f);
+    }
+    return set;
+  }
+
+  /**
+   * TS 完整性校验（轻量，不解析流内容）：
+   *   大小 > 0 且按 188（或 M2TS 192）字节整包对齐；
+   *   首包 / 尾包 / 中部抽样包的同步字节必须是 0x47。
+   * 截断、0 字节、被 HTML 错误页覆盖等损坏基本都能拦住。
+   */
+  checkTsIntegrity(p) {
+    try {
+      const size = fs.statSync(p).size;
+      if (size === 0) return false;
+      let pkt = 0;
+      if (size % 188 === 0) pkt = 188;
+      else if (size % 192 === 0) pkt = 192;
+      else return false;
+      const fd = fs.openSync(p, 'r');
+      try {
+        const buf = Buffer.alloc(1);
+        const syncOk = (pos) => {
+          fs.readSync(fd, buf, 0, 1, pos);
+          return buf[0] === 0x47;
+        };
+        if (!syncOk(0)) return false;
+        if (!syncOk(size - pkt)) return false;
+        if (size > pkt * 2 && !syncOk(Math.floor(size / 2 / pkt) * pkt)) return false;
+        return true;
+      } finally { fs.closeSync(fd); }
+    } catch (_) { return false; }
+  }
+
+  /**
+   * 扫库补缺：比对目录与下载目录，构建「缺失 + 损坏」补下队列。
+   * 同时清理无用文件：不在目录候选名里的孤儿 .ts、残留 .part、损坏 .ts（直接删除）。
+   * 返回 null 表示用户请求了停止。
+   */
+  async _buildScanQueue() {
+    const from = Math.max(1, Number(this.state.from) || 1);
+    const to = Math.min(this.catalogCount(), Number(this.state.to) || from);
+    const entries = this.catalogEntries();
+    const verify = this.state.verify !== false;
+
+    // 目录候选名全集（用于识别下载目录里的无用文件）
+    const validNames = new Set();
+    for (let i = from - 1; i < to; i++) {
+      const item = entries[i];
+      if (item) for (const name of this._nameCandidates(item)) validNames.add(name + '.ts');
+    }
+
+    // 第一步：清理下载目录里的无用文件（孤儿 .ts / 残留 .part / 损坏 .ts 校验时删）
+    let removed = 0, corruptCnt = 0;
+    let dirFiles;
+    try { dirFiles = fs.readdirSync(this.bulkDir); } catch (_) { dirFiles = []; }
+    for (const f of dirFiles) {
+      if (this.state.stopRequested) return null;
+      const p = path.join(this.bulkDir, f);
+      try {
+        if (f.endsWith('.part')) { fs.unlinkSync(p); removed++; continue; }
+        if (!f.endsWith('.ts')) continue;   // 其他文件不动
+        if (!validNames.has(f)) { fs.unlinkSync(p); removed++; continue; }   // 孤儿 ts：目录里没有对应条目
+        if (verify && !this.checkTsIntegrity(p)) { fs.unlinkSync(p); removed++; corruptCnt++; }   // 损坏：删除待补
+      } catch (_) {}
+      if ((removed % 200) === 0 && removed > 0) await new Promise((r) => setImmediate(r));
+    }
+    this.state.removed = removed;
+    this.state.invalid = corruptCnt;
+
+    // 第二步：构建缺失补下队列（含刚被删的损坏文件）
+    const names = this._scanDirSet();
+    const queue = [];
+    let have = 0, scanned = 0;
+    for (let i = from - 1; i < to; i++) {
+      if (this.state.stopRequested) return null;
+      const item = entries[i];
+      if (item) {
+        scanned++;
+        let existing = null;
+        for (const name of this._nameCandidates(item)) {
+          const f = name + '.ts';
+          if (names.has(f)) { existing = f; break; }
+        }
+        if (!existing) queue.push(item);
+        else have++;
+      }
+      if ((scanned % 200) === 0) {
+        this.state.scanned = scanned;
+        this.state.have = have;
+        this.state.current = `扫库中 ${scanned}/${to - from + 1}`;
+        this._saveState();
+        await new Promise((r) => setImmediate(r));   // 让出事件循环，不卡 HTTP 服务
+      }
+    }
+    this.state.scanned = scanned;
+    this.state.have = have;
+    return queue;
+  }
+
   async _run() {
     // 热更链路：启动时尝试拉最新 ktv_api.js（失败用本地副本）
     try {
@@ -263,10 +390,31 @@ class BulkDownloader {
     const { KtvApi } = require(this.apiJsPath);
     const api = new KtvApi({ debug: false });
 
-    // 读取目录的 [from, to] 区间（1-based，含两端）
-    const from = Math.max(1, Number(this.state.from) || 1);
-    const to = Math.min(this.catalogCount(), Number(this.state.to) || from + 9999);
-    const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).slice(from - 1, to);
+    // 构建下载队列：扫库补缺模式全库扫描，普通模式按 [from, to] 区间
+    let queue;
+    if (this.state.mode === 'scan') {
+      const q = await this._buildScanQueue();
+      if (!q) {   // 扫描期间请求停止
+        this.state.running = false;
+        this.state.current = '';
+        this._saveState();
+        return;
+      }
+      queue = q;
+      this.state.phase = 'download';
+      this.state.total = queue.length;
+      this.state.done = 0;
+      this.state.failed = 0;
+      this.state.limit = queue.length;
+      this.state.current = '';
+      this._saveState();
+    } else {
+      // 读取目录的 [from, to] 区间（1-based，含两端）
+      const from = Math.max(1, Number(this.state.from) || 1);
+      const to = Math.min(this.catalogCount(), Number(this.state.to) || from + 9999);
+      const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).slice(from - 1, to);
+      queue = lines.map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+    }
     let sinceSave = 0;
 
     const worker = async (queue) => {
@@ -297,11 +445,11 @@ class BulkDownloader {
       }
     };
 
-    const queue = lines.map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
     const workers = Array.from({ length: DL_CONCURRENCY }, () => worker(queue));
     await Promise.all(workers);
     this.state.running = false;
     this.state.current = '';
+    this.state.phase = '';
     this._saveState();
   }
 

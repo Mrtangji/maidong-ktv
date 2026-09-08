@@ -410,11 +410,16 @@
   <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap" data-page-node-id="z4pLtp6MnCEMcCyoRiuoUQ">
     <div class="crumb-btn focusable" id="bulkImport" tabindex="0" data-page-node-id="DBgZHadguasvkAZwk3Ldrg">① 导入 muse.db</div>
     <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0" data-page-node-id="zAEIq8oXDapDKPikXjqM3n">② 开始下载</div>
+    <div class="crumb-btn focusable accent" id="bulkScan" tabindex="0">③ 扫库补缺</div>
     <div class="crumb-btn focusable" id="bulkStop" tabindex="0" data-page-node-id="DZ2UWb4UYHSOk0nrjz4LIn">停止</div>
     <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto" data-page-node-id="4kFFRc8z3FYAaAZMcBzQTc">关闭</div>
   </div>
+  <div style="display:flex;gap:6px;align-items:center;margin-top:10px;font-size:12px;color:rgba(224,224,224,.7)">
+    <input id="bulkVerify" type="checkbox" checked style="width:16px;height:16px;accent-color:var(--accent)">
+    <label for="bulkVerify">扫库时校验已下载 ts 完整性（损坏的删除后重新下载）</label>
+  </div>
   <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px" data-page-node-id="4AOw6CRI8yc4sNgCIyzAH4">
-    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。
+    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。「③ 扫库补缺」覆盖全库：删除目录里曲库外的无用文件和残留分片，校验 ts 完整性，只补缺失/损坏的部分。
   </p>
 </div>
 <div id="toast" data-page-node-id="dUGS2SYmDw9vjBJGY34pzH"></div>
@@ -509,6 +514,17 @@ function renderBulk(st) {
   const rangeTxt = (st.from && st.to) ? ` · 区间 第 ${st.from} ~ ${st.to} 首` : '';
   info.innerHTML = `曲库目录：<b>${st.catalog}</b> 首（已按最常唱排序）` + rangeTxt +
     (st.running ? ' · <span style="color:var(--accent)">下载中…</span>' : (st.total ? ' · 已停止' : ''));
+  let phaseTxt = '';
+  if (st.phase === 'scan') {
+    phaseTxt = ` · <span style="color:var(--accent)">扫库中 ${st.scanned}/${st.scanTotal}（在库 ${st.have} · 损坏 ${st.invalid}）</span>`;
+    bar.style.width = (st.scanTotal ? Math.round(st.scanned / st.scanTotal * 100) : 0) + '%';
+    detail.innerHTML = `正在扫描下载目录、删除无用文件并校验完整性，扫完自动补下缺失/损坏的歌曲…`;
+    return;
+  }
+  if (st.mode === 'scan' && st.scanTotal) {
+    phaseTxt = ` · 扫库结果：在库 <b>${st.have}</b> · 损坏 <b>${st.invalid}</b> · 已删无用 <b>${st.removed || 0}</b> · 待补 <b>${st.total}</b>`;
+  }
+  info.innerHTML += phaseTxt;
   const pct = st.total ? Math.round((st.done + st.failed) / st.total * 100) : 0;
   bar.style.width = pct + '%';
   const errs = st.failed ? ` · <span style="color:var(--badge-red)">失败 ${st.failed}</span>` : '';
@@ -550,6 +566,15 @@ $('#bulkStart').addEventListener('click', async () => {
 });
 $('#bulkStop').addEventListener('click', async () => {
   try { await api('/api/v1/bulk/stop', { method: 'POST' }); toast('已请求停止，正在收尾…'); } catch (_) {}
+  pollBulk();
+});
+$('#bulkScan').addEventListener('click', async () => {
+  const verify = $('#bulkVerify').checked;
+  try {
+    const r = await api('/api/v1/bulk/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verify }) });
+    if (!r.ok) toast(r.error || '启动失败');
+    else toast(`扫库补缺已启动（共 ${r.total} 首${verify ? '，含完整性校验' : ''}）：扫完后自动补下缺失/损坏的歌曲`);
+  } catch (e) { toast('启动失败：' + e.message); }
   pollBulk();
 });
 
