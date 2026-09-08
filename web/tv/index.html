@@ -180,11 +180,24 @@
   #crumbHome { color: var(--accent); font-size: 14px; }
   #crumbCur { color: #fff; font-size: 14px; margin-left: 6px; }
   #crumb .sp { flex: 1; }
+  .crumb-btn {
+    height: 28px; margin-left: 8px; padding: 0 14px; display: flex; align-items: center;
+    font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid transparent;
+  }
+  .crumb-btn.accent { color: var(--accent); border-color: rgba(39,204,164,.5); background: rgba(39,204,164,.12); }
+  #dlChip { display: none; margin-left: 8px; font-size: 12px; color: var(--accent); align-items: center; gap: 4px; }
+  #dlChip.show { display: inline-flex; }
+  .chk {
+    width: 22px; height: 22px; border-radius: 11px; flex-shrink: 0;
+    border: 2px solid rgba(255,255,255,.35); color: transparent;
+    display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
+  }
+  .srow.batching .chk.on { background: var(--accent); border-color: var(--accent); color: #04241b; }
+  .srow.batching .ord, .srow.batching .fav { display: none; }
   #btnBack {
     height: 28px; margin-left: 10px; padding: 0 14px; display: flex; align-items: center;
     font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid transparent;
-  }
-  #subCats { display: none; margin-top: 12px; height: 28px; align-items: center; gap: 6px; overflow-x: auto; }
+  }  #subCats { display: none; margin-top: 12px; height: 28px; align-items: center; gap: 6px; overflow-x: auto; }
   #subCats.show { display: flex; }
   .cat-chip {
     height: 28px; padding: 0 14px; display: flex; align-items: center; font-size: 13px; white-space: nowrap;
@@ -332,7 +345,13 @@
       <div id="crumbHome" class="focusable" tabindex="0">‹ 主页</div>
       <div id="crumbCur"></div>
       <div class="sp"></div>
-      <div id="btnBack" class="focusable" tabindex="0">↩ 返回</div>
+      <div id="dlChip">⬇ <span id="dlChipNum">0</span></div>
+      <div id="btnBulk" class="crumb-btn focusable" tabindex="0">全库下载</div>
+      <div id="btnBatch" class="crumb-btn focusable" tabindex="0">批量下载</div>
+      <div id="btnSelAll" class="crumb-btn focusable" tabindex="0" style="display:none">全选</div>
+      <div id="btnBatchOk" class="crumb-btn focusable accent" tabindex="0" style="display:none">下载</div>
+      <div id="btnBatchCancel" class="crumb-btn focusable" tabindex="0" style="display:none">取消</div>
+      <div id="btnBack" class="crumb-btn focusable" tabindex="0">↩ 返回</div>
     </div>
     <div id="subCats"></div>
     <div id="songList"></div>
@@ -365,6 +384,23 @@
   <div class="url" id="qrUrl"></div>
   <p>手机浏览器访问上面的地址即可点歌<br>也可以在手机端管理音源与曲库</p>
   <div class="glass-btn focusable" id="qrClose" style="margin:14px auto 0;justify-content:center">关闭</div>
+</div>
+<div id="bulkModal" class="modal" style="top:50%;left:50%;transform:translate(-50%,-50%);width:520px">
+  <h3>📦 全库批量下载 <span style="font-size:12px;color:rgba(224,224,224,.5)">muse.db 曲库 · 最常唱优先</span></h3>
+  <div id="bulkInfo" style="font-size:13px;color:rgba(224,224,224,.75);line-height:1.8">读取状态中…</div>
+  <div style="height:6px;background:rgba(255,255,255,.1);border-radius:3px;margin:12px 0;overflow:hidden">
+    <div id="bulkBar" style="height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .5s"></div>
+  </div>
+  <div id="bulkDetail" style="font-size:12px;color:rgba(224,224,224,.55);min-height:18px"></div>
+  <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+    <div class="crumb-btn focusable" id="bulkImport" tabindex="0">① 导入 muse.db</div>
+    <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0">② 开始下载一万首</div>
+    <div class="crumb-btn focusable" id="bulkStop" tabindex="0">停止</div>
+    <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto">关闭</div>
+  </div>
+  <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px">
+    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。
+  </p>
 </div>
 <div id="toast"></div>
 
@@ -401,6 +437,7 @@ function showHome() {
   $('#home').classList.add('show'); $('#subpage').classList.remove('show');
 }
 function showSub(name, title) {
+  if (batchMode) { batchMode = false; batchSel.clear(); setBatchUI(false); }
   subPage = name; subTitle = title;
   $('#home').classList.remove('show'); $('#subpage').classList.add('show');
   $('#crumbCur').textContent = '‹ ' + title;
@@ -434,6 +471,68 @@ document.querySelectorAll('#home .card').forEach((c) => {
 $('#crumbHome').addEventListener('click', showHome);
 $('#btnBack').addEventListener('click', showHome);
 $('#btnSearchTop').addEventListener('click', () => showSub('song', '歌名'));
+$('#btnBatch').addEventListener('click', enterBatch);
+$('#btnSelAll').addEventListener('click', () => {
+  if (batchSel.size >= lastSongs.length) batchSel.clear();
+  else lastSongs.forEach((s) => batchSel.set(selKey(s), s));
+  renderSongs(lastSongs);
+});
+$('#btnBatchOk').addEventListener('click', batchDownload);
+$('#btnBatchCancel').addEventListener('click', exitBatch);
+
+// ---------- 全库批量下载（muse.db + 最常唱优先） ----------
+let bulkPollTimer = null;
+function renderBulk(st) {
+  const info = $('#bulkInfo'), detail = $('#bulkDetail'), bar = $('#bulkBar');
+  if (!st.muse && !st.catalog) {
+    info.innerHTML = '⚠ 未找到 muse.db —— 请先把手机上的 <b>/storage/emulated/0/MaidongKTV/database/muse.db</b><br>拷贝到服务器 <b>data</b> 目录，然后点「导入 muse.db」';
+    detail.textContent = '';
+    bar.style.width = '0';
+    return;
+  }
+  info.innerHTML = `曲库目录：<b>${st.catalog}</b> 首（已按最常唱排序）` +
+    (st.running ? ' · <span style="color:var(--accent)">下载中…</span>' : (st.total ? ' · 已停止' : ''));
+  const pct = st.total ? Math.round((st.done + st.failed) / st.total * 100) : 0;
+  bar.style.width = pct + '%';
+  const errs = st.failed ? ` · <span style="color:var(--badge-red)">失败 ${st.failed}</span>` : '';
+  detail.innerHTML = st.total
+    ? `进度 ${st.done} / ${st.total}（${pct}%）${errs}${st.current ? '<br>当前：' + esc(st.current) : ''}${st.lastError && st.failed ? '<br>最近错误：' + esc(st.lastError) : ''}`
+    : '';
+}
+async function pollBulk() {
+  try { renderBulk(await api('/api/v1/bulk/status')); } catch (_) {}
+}
+function startBulkPoll() {
+  if (bulkPollTimer) return;
+  bulkPollTimer = setInterval(pollBulk, 2000);
+  pollBulk();
+}
+function stopBulkPoll() { clearInterval(bulkPollTimer); bulkPollTimer = null; }
+$('#btnBulk').addEventListener('click', () => {
+  $('#mask').classList.add('show'); $('#bulkModal').classList.add('show');
+  startBulkPoll();
+});
+$('#bulkClose').addEventListener('click', () => { stopBulkPoll(); closeModals(); });
+$('#bulkImport').addEventListener('click', async () => {
+  $('#bulkImport').textContent = '导入中…';
+  try {
+    const r = await api('/api/v1/bulk/import', { method: 'POST' });
+    toast(`曲库目录导入完成：${r.catalog} 首`);
+  } catch (e) { toast('导入失败：' + e.message); }
+  $('#bulkImport').textContent = '① 导入 muse.db';
+  pollBulk();
+});
+$('#bulkStart').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/v1/bulk/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 10000 }) });
+    if (!r.ok) toast(r.error || '启动失败'); else toast(`批量下载已启动：${r.total} 首（最常唱优先）`);
+  } catch (e) { toast('启动失败：' + e.message); }
+  pollBulk();
+});
+$('#bulkStop').addEventListener('click', async () => {
+  try { await api('/api/v1/bulk/stop', { method: 'POST' }); toast('已请求停止，正在收尾…'); } catch (_) {}
+  pollBulk();
+});
 
 // ---------- 排行榜 ----------
 let boardCache = {};
@@ -464,14 +563,31 @@ async function openBoard(b) {
 }
 
 // ---------- 歌曲列表 ----------
+let lastSongs = [];
+let batchMode = false;
+const batchSel = new Map(); // key -> song
+const selKey = (s) => s.songId + '|' + (s.title || '');
+
 function songRow(s, i) {
   const div = document.createElement('div');
-  div.className = 'srow focusable'; div.tabIndex = 0;
+  div.className = 'srow focusable' + (batchMode ? ' batching' : ''); div.tabIndex = 0;
   const fav = favs[favKey(s)] ? ' on' : '';
-  div.innerHTML = `<div class="idx">${i + 1}</div>` +
+  div.innerHTML = (batchMode ? `<div class="chk${batchSel.has(selKey(s)) ? ' on' : ''}">✓</div>` : '') +
+    `<div class="idx">${i + 1}</div>` +
     (s.pic ? `<img class="pic" src="${esc(s.pic)}" onerror="this.style.visibility='hidden'">` : '') +
     `<div class="meta"><div class="t">${esc(s.title)}${s.cached ? '<span class="cached-tag">已缓存</span>' : ''}</div><div class="s">${esc(s.singer || '')}</div></div>` +
     `<div class="fav${fav}">♥</div><div class="ord">点唱</div>`;
+  if (batchMode) {
+    const toggle = () => {
+      const k = selKey(s);
+      if (batchSel.has(k)) batchSel.delete(k); else batchSel.set(k, s);
+      const chk = div.querySelector('.chk');
+      chk.classList.toggle('on', batchSel.has(k));
+      updateBatchBtns();
+    };
+    div.addEventListener('click', toggle);
+    return div;
+  }
   div.querySelector('.ord').addEventListener('click', (e) => { e.stopPropagation(); orderSong(s); });
   div.querySelector('.fav').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -484,12 +600,67 @@ function songRow(s, i) {
   return div;
 }
 function renderSongs(songs) {
+  lastSongs = songs || [];
   const list = $('#songList');
   list.innerHTML = '';
   $('#gridWrap').style.display = 'none';
   $('#songList').style.display = 'block';
-  if (!songs.length) { list.innerHTML = '<div class="empty">没有结果</div>'; return; }
-  songs.forEach((s, i) => list.appendChild(songRow(s, i)));
+  if (!lastSongs.length) { list.innerHTML = '<div class="empty">没有结果</div>'; updateBatchBtns(); return; }
+  lastSongs.forEach((s, i) => list.appendChild(songRow(s, i)));
+  updateBatchBtns();
+}
+
+// ---------- 批量下载 ----------
+function setBatchUI(on) {
+  $('#btnBatch').style.display = on ? 'none' : 'flex';
+  ['btnSelAll', 'btnBatchOk', 'btnBatchCancel'].forEach((id) => { $(`#${id}`).style.display = on ? 'flex' : 'none'; });
+}
+function updateBatchBtns() {
+  if (batchMode) $('#btnBatchOk').textContent = `下载(${batchSel.size})`;
+}
+function enterBatch() {
+  if (!lastSongs.length) { toast('当前列表没有可下载的歌曲'); return; }
+  batchMode = true; batchSel.clear();
+  setBatchUI(true); renderSongs(lastSongs);
+  toast('勾选要缓存到 NAS 的歌曲');
+}
+function exitBatch() {
+  batchMode = false; batchSel.clear();
+  setBatchUI(false);
+  if ($('#songList').style.display !== 'none') renderSongs(lastSongs);
+}
+async function batchDownload() {
+  const songs = [...batchSel.values()];
+  if (!songs.length) { toast('先勾选歌曲'); return; }
+  try {
+    const r = await api('/api/v1/library/cache', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ songs: songs.map((s) => ({ songId: s.songId, title: s.title, singer: s.singer, quality: '320k' })) }),
+    });
+    toast(`已加入下载队列 ${r.added} 首${songs.length - r.added > 0 ? `（跳过已缓存 ${songs.length - r.added} 首）` : ''}`);
+    exitBatch();
+    startDlPoll();
+  } catch (e) { toast('批量下载失败：' + e.message); }
+}
+let dlPollTimer = null, dlHadPending = false;
+function startDlPoll() {
+  if (dlPollTimer) return;
+  dlPollTimer = setInterval(async () => {
+    try {
+      const st = await api('/api/v1/library/status');
+      const n = (st.pending || 0) + (st.active || 0);
+      if (n > 0) {
+        dlHadPending = true;
+        $('#dlChip').classList.add('show');
+        $('#dlChipNum').textContent = n;
+      } else {
+        $('#dlChip').classList.remove('show');
+        if (dlHadPending) { dlHadPending = false; toast('批量下载完成，歌曲已入 NAS 曲库'); }
+        clearInterval(dlPollTimer); dlPollTimer = null;
+      }
+      if (st.failedCount > 0 && dlHadPending && n === 0) toast(`有 ${st.failedCount} 首下载失败（详见手机端 /m 曲库页）`);
+    } catch (_) {}
+  }, 2500);
 }
 
 // ---------- 搜索（屏上键盘） ----------
@@ -546,9 +717,11 @@ async function loadLibrary(page) {
     libTotal = Math.max(1, Math.ceil(libSongs.length / PAGE_SIZE));
     libPage = Math.min(Math.max(1, page), libTotal);
     const slice = libSongs.slice((libPage - 1) * PAGE_SIZE, libPage * PAGE_SIZE);
+    lastSongs = slice.map((s) => ({ songId: s.songId, title: s.title, singer: s.singer, pic: s.pic, cached: true }));
     const list = $('#songList'); list.innerHTML = '';
-    if (!slice.length) { list.innerHTML = '<div class="empty">NAS 曲库还是空的<br>点唱过的歌会自动缓存进来</div>'; }
+    if (!slice.length) { list.innerHTML = '<div class="empty">NAS 曲库还是空的<br>点唱过的歌会自动缓存进来</div>'; updateBatchBtns(); return; }
     slice.forEach((s, i) => list.appendChild(songRow({ songId: s.songId, title: s.title, singer: s.singer, pic: s.pic, cached: true }, i)));
+    updateBatchBtns();
     $('#pager').style.display = 'flex';
     $('#pageInfo').textContent = `${libPage} / ${libTotal}（共 ${libSongs.length} 首）`;
   } catch (e) { $('#songList').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }

@@ -20,6 +20,7 @@ const { LxSandbox } = require('./src/lx-sandbox');
 const kw = require('./src/kw');
 const kwUrl = require('./src/kw-url');
 const { LibraryCache } = require('./src/cache');
+const { BulkDownloader } = require('./src/bulk');
 const { SongQueue } = require('./src/queue');
 
 const VERSION = '1.1.0';
@@ -91,6 +92,9 @@ const cache = new LibraryCache(DATA_DIR, MUSIC_DIR, {
 });
 
 const queue = new SongQueue(DATA_DIR);
+
+// muse.db 全库批量下载（最常唱优先）
+const bulk = new BulkDownloader(DATA_DIR, MUSIC_DIR);
 
 // ---------- 工具 ----------
 
@@ -313,6 +317,27 @@ async function handleApi(req, res, url) {
   if (p === '/api/v1/library/status/clear-failed' && req.method === 'POST') {
     cache.failed = {};
     return sendJson(res, 200, cache.status());
+  }
+
+  // ----- muse.db 全库批量下载（最常唱优先） -----
+  if (p === '/api/v1/bulk/status' && req.method === 'GET') {
+    return sendJson(res, 200, bulk.status());
+  }
+  if (p === '/api/v1/bulk/import' && req.method === 'POST') {
+    try {
+      const n = await bulk.importCatalog();
+      return sendJson(res, 200, { ok: true, catalog: n });
+    } catch (e) { return sendJson(res, 500, { error: e.message }); }
+  }
+  if (p === '/api/v1/bulk/start' && req.method === 'POST') {
+    const body = await readBody(req);
+    let limit = 10000;
+    try { limit = Number(JSON.parse(body.toString('utf8') || '{}').limit) || 10000; } catch (_) {}
+    const r = bulk.start(limit);
+    return sendJson(res, r.ok ? 200 : 409, r);
+  }
+  if (p === '/api/v1/bulk/stop' && req.method === 'POST') {
+    return sendJson(res, 200, bulk.stop());
   }
   const libRemove = p.match(/^\/api\/v1\/library\/([^/]+)$/);
   if (libRemove && req.method === 'DELETE') {

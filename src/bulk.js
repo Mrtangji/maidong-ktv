@@ -1,0 +1,251 @@
+/**
+ * 全库批量下载（muse.db 曲库 + 最常唱优先）
+ * ============================================
+ * 数据流：
+ *   /data/muse.db（用户放入，与 app 同款曲库）
+ *     → POST /api/v1/bulk/import 解析出按 rec_score/local_hot/hot 排序的目录
+ *       （data/bulk-catalog.json，NDJSON，一行一首）
+ *     → POST /api/v1/bulk/start {limit} 启动 worker：
+ *         ktv_api.js 热更链路实时换新签名直链 → 下载 → music/ts/<原文件名>
+ *         与 muse.db、app 的 /ts 缓存严格同名对应。
+ * 进度持久化在 data/bulk-state.json，服务重启后可继续（按已存在文件跳过）。
+ */
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const { DatabaseSync } = require('node:sqlite');
+
+const API_JS_REMOTE =
+  'https://gitee.com/yangyachao-X/maidong-ktv/raw/master/app/src/main/assets/mobile/ktv_api.js';
+const DL_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.BULK_CONCURRENCY) || 2)); // 并发下载（每首要先换链，CDN 压力友好）
+const STATE_SAVE_EVERY = 5;      // 每完成 n 首落盘一次进度
+
+/** Node 版 XMLHttpRequest shim：供 ktv_api.js 的 httpGet/httpPost 使用。 */
+function installXhrShim() {
+  if (global.XMLHttpRequest) return;
+  global.XMLHttpRequest = class {
+    open(method, url) { this._method = method; this._url = url; }
+    setRequestHeader() {}
+    send(body) {
+      const done = (r) => setTimeout(() => {
+        if (r instanceof Error) { this.onerror && this.onerror(r); return; }
+        this.status = r.s; this.responseText = r.b; this.onload && this.onload();
+      }, 0);
+      const mod = this._url.startsWith('https') ? https : http;
+      const req = mod.request(this._url, {
+        method: this._method,
+        headers: { Accept: '*/*', 'User-Agent': 'Dalvik/2.1.0' },
+        timeout: 15000,
+      }, (res) => {
+        let b = '';
+        res.on('data', (c) => { b += c; });
+        res.on('end', () => done({ s: res.statusCode, b }));
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => done(e));
+      if (body) req.write(body);
+      req.end();
+    }
+  };
+}
+
+class BulkDownloader {
+  constructor(dataDir, musicDir) {
+    this.dataDir = dataDir;
+    this.musicTsDir = path.join(musicDir, 'ts');
+    this.museDbPath = path.join(dataDir, 'muse.db');
+    this.catalogPath = path.join(dataDir, 'bulk-catalog.json');
+    this.statePath = path.join(dataDir, 'bulk-state.json');
+    this.apiJsPath = path.join(__dirname, 'vendor-ktv-api.js');
+    installXhrShim();
+    this.state = {
+      running: false,
+      total: 0, done: 0, failed: 0,
+      current: '',          // 正在处理的歌
+      lastError: '',
+      startedAt: null,
+      limit: 0,
+      stopRequested: false,
+    };
+    this._loadState();
+  }
+
+  _loadState() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
+      Object.assign(this.state, raw, { running: false, stopRequested: false, current: '' });
+    } catch (_) {}
+  }
+
+  _saveState() {
+    try { fs.writeFileSync(this.statePath, JSON.stringify(this.state)); } catch (_) {}
+  }
+
+  /** muse.db 是否可用 */
+  museExists() { return fs.existsSync(this.museDbPath); }
+
+  catalogCount() {
+    try { return fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).length; }
+    catch (_) { return 0; }
+  }
+
+  /** 解析 muse.db → 按最常唱排序的目录（NDJSON）。 */
+  async importCatalog() {
+    if (!this.museExists()) throw new Error('未找到 muse.db（请把它放到服务器 data 目录后重试）');
+    const db = new DatabaseSync(this.museDbPath, { readOnly: true });
+    const rows = db.prepare(
+      "SELECT s.filename, s.name, s.rec_score, s.local_hot_score, s.hot_score, " +
+      "(SELECT group_concat(sg.name, ',') FROM song_singer_relations ssr " +
+      "INNER JOIN singers sg ON sg.id=ssr.singer_id WHERE ssr.song_id=s.id) AS sn " +
+      "FROM songs s WHERE s.deleted_at IS NULL AND s.cloud_url IS NOT NULL AND s.cloud_url != '' " +
+      "AND s.filename IS NOT NULL AND s.filename != '' " +
+      "ORDER BY s.rec_score DESC, s.local_hot_score DESC, s.hot_score DESC"
+    );
+    const tmp = this.catalogPath + '.tmp';
+    const out = fs.createWriteStream(tmp);
+    let n = 0;
+    for (const r of rows.iterate()) {
+      const musicNo = r.filename.replace(/\.ls$/i, '').replace(/\.ts$/i, '');
+      const line = JSON.stringify({
+        file: r.filename,
+        no: musicNo,
+        title: r.name || musicNo,
+        singer: r.sn || '',
+      });
+      if (!out.write(line + '\n')) {
+        await new Promise((res) => out.once('drain', res));
+      }
+      n++;
+    }
+    await new Promise((res) => out.end(res));
+    fs.renameSync(tmp, this.catalogPath);
+    db.close();
+    return n;
+  }
+
+  /** 启动批量下载（已在跑则拒绝）。 */
+  start(limit = 10000) {
+    if (this.state.running) return { ok: false, error: '批量下载已在进行中' };
+    if (!this.catalogCount()) return { ok: false, error: '尚未导入 muse.db 曲库（先执行导入）' };
+    this.state.running = true;
+    this.state.stopRequested = false;
+    this.state.total = Math.min(limit, this.catalogCount());
+    this.state.done = 0;
+    this.state.failed = 0;
+    this.state.lastError = '';
+    this.state.startedAt = new Date().toISOString();
+    this.state.limit = this.state.total;
+    this._saveState();
+    fs.mkdirSync(this.musicTsDir, { recursive: true });
+    // 后台跑，不阻塞请求
+    this._run().catch((e) => {
+      this.state.lastError = String(e && e.message || e);
+      this.state.running = false;
+      this._saveState();
+    });
+    return { ok: true, total: this.state.total };
+  }
+
+  stop() {
+    if (!this.state.running) return { ok: false, error: '没有进行中的批量下载' };
+    this.state.stopRequested = true;
+    return { ok: true };
+  }
+
+  status() {
+    return {
+      muse: this.museExists(),
+      catalog: this.catalogCount(),
+      running: this.state.running,
+      total: this.state.total,
+      done: this.state.done,
+      failed: this.state.failed,
+      current: this.state.current,
+      lastError: this.state.lastError,
+      startedAt: this.state.startedAt,
+    };
+  }
+
+  async _run() {
+    // 热更链路：启动时尝试拉最新 ktv_api.js（失败用本地副本）
+    try {
+      const fresh = await new Promise((resolve) => {
+        const mod = API_JS_REMOTE.startsWith('https') ? https : http;
+        const req = mod.get(API_JS_REMOTE, { timeout: 6000 }, (res) => {
+          if (res.statusCode !== 200) { resolve(null); res.resume(); return; }
+          let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(b));
+        });
+        req.on('timeout', () => req.destroy());
+        req.on('error', () => resolve(null));
+      });
+      if (fresh && fresh.includes('KtvApi')) fs.writeFileSync(this.apiJsPath, fresh);
+    } catch (_) {}
+
+    delete require.cache[require.resolve(this.apiJsPath)];
+    const { KtvApi } = require(this.apiJsPath);
+    const api = new KtvApi({ debug: false });
+
+    // 读取目录前 total 行
+    const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).slice(0, this.state.total);
+    let sinceSave = 0;
+
+    const worker = async (queue) => {
+      while (queue.length > 0) {
+        if (this.state.stopRequested) return;
+        const item = queue.shift();
+        if (!item) return;
+        const target = path.join(this.musicTsDir, item.file);
+        if (fs.existsSync(target)) { this.state.done++; continue; } // 已缓存，秒过
+        this.state.current = `${item.title}（${item.singer || '未知歌手'}）`;
+        try {
+          const url = await api.getSongUrl(item.no, '720', false);
+          if (!url) throw new Error('换链失败');
+          await this._download(url, target);
+          this.state.done++;
+        } catch (e) {
+          this.state.failed++;
+          this.state.lastError = `${item.title}: ${e && e.message || e}`;
+          try { fs.unlinkSync(target + '.part'); } catch (_) {}
+        }
+        if (++sinceSave >= STATE_SAVE_EVERY) { sinceSave = 0; this._saveState(); }
+      }
+    };
+
+    const queue = lines.map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+    const workers = Array.from({ length: DL_CONCURRENCY }, () => worker(queue));
+    await Promise.all(workers);
+    this.state.running = false;
+    this.state.current = '';
+    this._saveState();
+  }
+
+  _download(url, target, redirectsLeft = 3) {
+    return new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(target + '.part');
+      const mod = url.startsWith('https') ? https : http;
+      const req = mod.get(url, { timeout: 60000, headers: { Accept: '*/*' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          file.close();
+          return this._download(res.headers.location, target, redirectsLeft - 1).then(resolve, reject);
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          file.close(() => fs.unlink(target + '.part', () => {}));
+          return reject(new Error('HTTP ' + res.statusCode));
+        }
+        res.pipe(file);
+        file.on('finish', () => file.close(() => fs.rename(target + '.part', target, resolve)));
+      });
+      req.on('timeout', () => req.destroy(new Error('下载超时')));
+      req.on('error', (e) => {
+        file.close(() => fs.unlink(target + '.part', () => reject(e)));
+      });
+    });
+  }
+}
+
+module.exports = { BulkDownloader };
