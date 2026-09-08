@@ -49,7 +49,7 @@ class SongQueue {
   }
 
   list() { return this.items; }
-  history() { return this.history; }
+  getHistory() { return this.history; }
 
   current() { return this.items[0] || null; }
 

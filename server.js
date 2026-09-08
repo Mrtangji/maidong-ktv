@@ -322,7 +322,7 @@ async function handleApi(req, res, url) {
 
   // ----- 点歌队列 -----
   if (p === '/api/v1/queue' && req.method === 'GET') {
-    return sendJson(res, 200, { items: queue.list(), history: queue.history(), current: queue.current() });
+    return sendJson(res, 200, { items: queue.list(), history: queue.getHistory(), current: queue.current() });
   }
   if (p === '/api/v1/queue' && req.method === 'POST') {
     const body = await readBody(req);
