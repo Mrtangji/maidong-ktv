@@ -204,7 +204,7 @@ class BulkDownloader {
   }
 
   /** Windows/通用非法字符安全化 + 截断。 */
-  _safeName(name) {
+  safeName(name) {
     return String(name || '')
       .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
       .replace(/\s+/g, ' ')
@@ -214,7 +214,7 @@ class BulkDownloader {
 
   /** 落盘文件名候选（确定性，可复现查找）：歌手 - 歌名.ts → [编号] → [编号]b2… */
   _nameCandidates(item) {
-    const base = `${this._safeName(item.singer || '未知歌手')} - ${this._safeName(item.title)}`;
+    const base = `${this.safeName(item.singer || '未知歌手')} - ${this.safeName(item.title)}`;
     const out = [base, `${base} [${item.no}]`];
     for (let i = 2; i <= 5; i++) out.push(`${base} [${item.no}]b${i}`);
     return out;

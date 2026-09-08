@@ -321,20 +321,36 @@ async function handleApi(req, res, url) {
   if (p === '/api/v1/library' && req.method === 'GET') {
     return sendJson(res, 200, { songs: cache.list(), status: cache.status() });
   }
+  // 安卓端点播缓存探测：按 muse 原文件名查（内部映射「歌手 - 歌名.ts」落盘名）
+  if (p === '/api/v1/library/ts/check' && req.method === 'GET') {
+    const file = q.get('file') || '';
+    if (!/^[\w\u4e00-\u9fa5\-. ]+\.(ts|ls)$/i.test(file)) return sendJson(res, 400, { error: '非法文件名' });
+    const orig = path.join(TS_DIR, file);
+    if (fs.existsSync(orig) && fs.statSync(orig).size > 0) return sendJson(res, 200, { exists: true, file });
+    const friendly = bulk.findExistingByMuseFile(file);
+    if (friendly) return sendJson(res, 200, { exists: true, file: path.basename(friendly) });
+    return sendJson(res, 200, { exists: false });
+  }
   // muse.db 原生曲库（bulk 批量下载的 .ts / MV），服务器分页浏览
   if (p === '/api/v1/library/ts' && req.method === 'GET') {
     const page = Math.max(1, Number(q.get('page') || 1));
     const pageSize = Math.min(Math.max(1, Number(q.get('pageSize') || 30)), 100);
     const keyword = (q.get('keyword') || '').trim().toLowerCase();
-    const files = new Set();
+    const onDisk = new Set();
     for (const dir of [BULK_DIR, path.join(MUSIC_DIR, 'ts')]) {
       try {
         for (const f of fs.readdirSync(dir)) {
-          if (!f.endsWith('.part')) files.add(f);
+          if (!f.endsWith('.part')) onDisk.add(f);
         }
       } catch (_) {}
     }
-    const all = bulk.catalogEntries().filter((e) => files.has(e.file));
+    // 目录条目 file=muse 原名；落盘名是「歌手 - 歌名.ts」→ 用候选名集合比对
+    const all = bulk.catalogEntries().filter((e) => {
+      if (onDisk.has(e.file)) return true;
+      const base = `${bulk.safeName(e.singer || '未知歌手')} - ${bulk.safeName(e.title)}`;
+      return [base, `${base} [${e.no}]`, `${base} [${e.no}]b2`, `${base} [${e.no}]b3`, `${base} [${e.no}]b4`, `${base} [${e.no}]b5`]
+        .some((c) => onDisk.has(c + '.ts'));
+    });
     const filtered = keyword
       ? all.filter((e) => ((e.title || '') + ' ' + (e.singer || '')).toLowerCase().includes(keyword))
       : all;
