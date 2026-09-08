@@ -16,8 +16,10 @@ services:
     #   - "8080:8080"
     #   - "18888:18888/udp"
     volumes:
-      - /vol1/1000/docker/maidong-ktv/music:/music   # 曲库缓存（按 NAS 实际路径修改）
-      - /vol1/1000/docker/maidong-ktv/data:/data     # 音源脚本/索引/队列
+      - /vol1/1000/docker/maidong-ktv/music:/music   # 酷我点歌缓存（按 NAS 实际路径修改）
+      - /vol1/1000/docker/maidong-ktv/data:/data     # 音源脚本/索引/队列/muse.db
+      - /vol1/1000/docker/maidong-ktv/mv:/mv         # 全库批量下载的 MV（歌手 - 歌名.ts）
     environment:
       - PORT=8080
       - DISCOVERY_PORT=18888
+      - BULK_DIR=/mv               # 全库批量下载落盘目录

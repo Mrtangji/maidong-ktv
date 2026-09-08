@@ -22,6 +22,7 @@ const kwUrl = require('./src/kw-url');
 const { LibraryCache } = require('./src/cache');
 const { BulkDownloader } = require('./src/bulk');
 const { SongQueue } = require('./src/queue');
+const { MuseRank } = require('./src/muse-rank');
 
 const VERSION = '1.1.0';
 const PORT = Number(process.env.PORT || 8080);
@@ -93,8 +94,12 @@ const cache = new LibraryCache(DATA_DIR, MUSIC_DIR, {
 
 const queue = new SongQueue(DATA_DIR);
 
-// muse.db 全库批量下载（最常唱优先）
-const bulk = new BulkDownloader(DATA_DIR, MUSIC_DIR);
+// muse.db 全库批量下载（最常唱优先；MV 落盘目录可用 BULK_DIR 指定，如挂载的 /mv）
+const BULK_DIR = process.env.BULK_DIR || path.join(MUSIC_DIR, 'ts');
+const bulk = new BulkDownloader(DATA_DIR, BULK_DIR);
+
+// muse.db 排行榜（与安卓端同源，只读）
+const museRank = new MuseRank(DATA_DIR, MUSIC_DIR);
 
 // ---------- 工具 ----------
 
@@ -268,6 +273,19 @@ async function handleApi(req, res, url) {
   if (p === '/api/v1/board' && req.method === 'GET') {
     return sendJson(res, 200, { boards: kw.BOARDS });
   }
+
+  // ----- muse.db 排行榜（与安卓端同源） -----
+  if (p === '/api/v1/muse/rank' && req.method === 'GET') {
+    return sendJson(res, 200, { available: museRank.available(), boards: museRank.rankPlaylists() });
+  }
+  if (p === '/api/v1/muse/rank/songs' && req.method === 'GET') {
+    const id = q.get('id') || '';
+    if (!id) return sendJson(res, 400, { error: '缺少 id' });
+    const page = Math.max(1, Number(q.get('page') || 1));
+    const pageSize = Math.min(Math.max(1, Number(q.get('pageSize') || 30)), 100);
+    const r = museRank.rankSongs(id, page, pageSize);
+    return sendJson(res, 200, { songs: r.songs, total: r.total, page, pageSize });
+  }
   if (p === '/api/v1/board/songs' && req.method === 'GET') {
     const id = q.get('id') || '';
     const board = kw.BOARDS.find((b) => b.id === id);
@@ -302,6 +320,31 @@ async function handleApi(req, res, url) {
   // ----- 曲库（NAS 缓存） -----
   if (p === '/api/v1/library' && req.method === 'GET') {
     return sendJson(res, 200, { songs: cache.list(), status: cache.status() });
+  }
+  // muse.db 原生曲库（bulk 批量下载的 .ts / MV），服务器分页浏览
+  if (p === '/api/v1/library/ts' && req.method === 'GET') {
+    const page = Math.max(1, Number(q.get('page') || 1));
+    const pageSize = Math.min(Math.max(1, Number(q.get('pageSize') || 30)), 100);
+    const keyword = (q.get('keyword') || '').trim().toLowerCase();
+    const files = new Set();
+    for (const dir of [BULK_DIR, path.join(MUSIC_DIR, 'ts')]) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.part')) files.add(f);
+        }
+      } catch (_) {}
+    }
+    const all = bulk.catalogEntries().filter((e) => files.has(e.file));
+    const filtered = keyword
+      ? all.filter((e) => ((e.title || '') + ' ' + (e.singer || '')).toLowerCase().includes(keyword))
+      : all;
+    const from = (page - 1) * pageSize;
+    return sendJson(res, 200, {
+      songs: filtered.slice(from, from + pageSize),
+      total: filtered.length,
+      page,
+      pageSize,
+    });
   }
   if (p === '/api/v1/library/cache' && req.method === 'POST') {
     const body = await readBody(req);
@@ -358,6 +401,30 @@ async function handleApi(req, res, url) {
     const item = queue.add(song);
     if (!item) return sendJson(res, 200, { ok: false, error: '歌曲已在队列中' });
     return sendJson(res, 200, { ok: true, item, items: queue.list() });
+  }
+  // 按曲库条目（muse.db 榜单/曲库）点唱：自动按「歌名 歌手」搜酷我并加入队列
+  if (p === '/api/v1/queue/by-no' && req.method === 'POST') {
+    const body = await readBody(req);
+    let entry;
+    try { entry = JSON.parse(body.toString('utf8')); } catch (_) { return sendJson(res, 400, { error: 'JSON 解析失败' }); }
+    const no = String(entry.no || '').trim();
+    if (!no) return sendJson(res, 400, { error: '缺少 no' });
+    const title = String(entry.title || '');
+    const singer = String(entry.singer || '');
+    try {
+      const keyword = [title, singer].filter(Boolean).join(' ');
+      const songs = await kw.search(keyword, 1, 5);
+      const pick = songs.find((s) => s && s.songId);
+      if (!pick) return sendJson(res, 404, { error: '未找到可点唱的在线版本：' + title });
+      pick.title = pick.title || title;
+      pick.singer = pick.singer || singer;
+      if (!pick.musicInfo) pick.musicInfo = kw.musicInfo(pick.songId, pick.title, pick.singer);
+      const item = queue.add(pick);
+      if (!item) return sendJson(res, 200, { ok: false, error: '歌曲已在队列中' });
+      return sendJson(res, 200, { ok: true, item, items: queue.list() });
+    } catch (e) {
+      return sendJson(res, 502, { error: e.message });
+    }
   }
   if (p === '/api/v1/queue/played' && req.method === 'POST') {
     const item = queue.played(Number(q.get('index') || 0));
@@ -521,8 +588,13 @@ async function handleTs(req, res, filename, query) {
   const target = path.join(TS_DIR, filename);
 
   // 1) NAS 缓存命中 → 局域网直接服务（支持 Range 断点续传）
+  //    优先查 muse.db 原名文件（app 点歌缓存），再回查「歌手 - 歌名.ts」（全库批量下载落盘名）
   if (fs.existsSync(target) && fs.statSync(target).size > 0) {
     return serveMediaFile(req, res, target, filename, tsContentType(filename));
+  }
+  const friendly = bulk.findExistingByMuseFile(filename);
+  if (friendly) {
+    return serveMediaFile(req, res, friendly, path.basename(friendly), tsContentType(filename));
   }
 
   // 2) 未命中 → 需要 src（app 解析好的 CDN 直链），NAS 代下载并缓存
@@ -549,7 +621,6 @@ async function handleTs(req, res, filename, query) {
     await proxyAndCache(src, res, { targetPath: target, contentType: tsContentType(filename) });
     const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
     console.log(`[ts] 已缓存: ${filename} (${(size / 1024 / 1024).toFixed(1)}MB)`);
-    bulk.friendlyLinkByFile(filename);   // 同步产出 music/<歌手 - 歌名>.ts 硬链接
     done();
   } catch (e) {
     fail(e);

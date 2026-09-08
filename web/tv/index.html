@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=1280, initial-scale=1">
+<html lang="zh-CN" data-page-node-id="oa6GaHaE0kxykXGiIKAGfe">
+<head data-page-node-id="orRCmAR63Xwer9DYCQyZQs">
+<meta charset="utf-8" data-page-node-id="s9yiG4GlBQ0R5aDIUfiDj3">
+<meta name="viewport" content="width=1280, initial-scale=1" data-page-node-id="4b9jrDNmAanjMji40RYP5f">
 <title>麦动KTV</title>
 <style>
   /* ====== 原版麦动配色（取自 res/drawable） ====== */
@@ -274,143 +274,143 @@
   }
 </style>
 </head>
-<body>
+<body data-page-node-id="Kqiq3U87kIAWKC0ex3CR8m">
 
 <!-- ============ 顶部状态栏 ============ -->
-<div id="topbar">
-  <img class="logo" src="/tv/assets/ktv_logo.png" alt="">
-  <div class="brand">麦动</div>
-  <div id="btnSearchTop" class="focusable" tabindex="0">⌕ 搜索</div>
-  <div class="sp"></div>
-  <div id="btnOrder" class="topbar-btn focusable" tabindex="0">已点 <span id="orderBadge">0</span></div>
-  <div id="btnVocal" class="topbar-btn focusable" tabindex="0">原唱</div>
-  <div id="btnNext" class="topbar-btn focusable" tabindex="0">切歌</div>
-  <div id="btnPause" class="topbar-btn focusable" tabindex="0">暂停</div>
-  <div id="btnReplay" class="topbar-btn focusable" tabindex="0">重唱</div>
-  <div id="btnTone" class="topbar-btn focusable" tabindex="0">调音</div>
-  <div id="wifi" class="ok">📶</div>
+<div id="topbar" data-page-node-id="RhRIEPXyVTBo0MrphbjDGl">
+  <img class="logo" src="/tv/assets/ktv_logo.png" alt="" data-page-node-id="Fh3GgF6t0B39n5vm48Hanh">
+  <div class="brand" data-page-node-id="qdyF5MSKowFZkg3N9lixLb">麦动</div>
+  <div id="btnSearchTop" class="focusable" tabindex="0" data-page-node-id="IAHAa7GasYUlC7GHGV8nUo">⌕ 搜索</div>
+  <div class="sp" data-page-node-id="hyO2KmsKR81TUAJyR9uVrt"></div>
+  <div id="btnOrder" class="topbar-btn focusable" tabindex="0" data-page-node-id="UDsuihWWTfu8LZSVAHA6IH">已点 <span id="orderBadge" data-page-node-id="B9sAItlMOWSMyhDU8x6Ea5">0</span></div>
+  <div id="btnVocal" class="topbar-btn focusable" tabindex="0" data-page-node-id="MdLv6rjPtBiRYLA6cyzoKZ">原唱</div>
+  <div id="btnNext" class="topbar-btn focusable" tabindex="0" data-page-node-id="1ZfkjsTGHykxRuvHMe6cw5">切歌</div>
+  <div id="btnPause" class="topbar-btn focusable" tabindex="0" data-page-node-id="2je3GBVlnF9Ir287EuG6kC">暂停</div>
+  <div id="btnReplay" class="topbar-btn focusable" tabindex="0" data-page-node-id="PQlxup7KPKGWUulIfJ1vu5">重唱</div>
+  <div id="btnTone" class="topbar-btn focusable" tabindex="0" data-page-node-id="REfRLRi4mCZ6h1vuRfmaJF">调音</div>
+  <div id="wifi" class="ok" data-page-node-id="5RVl1gJ4DTZW5cnPyKyGET">📶</div>
 </div>
 
 <!-- ============ 首页 ============ -->
-<div id="home" class="page show">
-  <div id="homeLeft">
-    <div id="playerWin">
-      <canvas class="viz" id="vizHome"></canvas>
-      <div id="npTop">当前：未播放&nbsp;&nbsp;&nbsp;下一首：无</div>
-      <div id="lyricsHome"><div id="lyricHomeInner"></div></div>
-      <div id="npOverlay">
-        <div id="npTitle">未播放</div>
-        <div id="npSinger">手机访问 /m 扫码点歌</div>
+<div id="home" class="page show" data-page-node-id="STTSnxqICmNRPkPFUpxCJP">
+  <div id="homeLeft" data-page-node-id="Mr2Xbyi4aSHJV8I9vBwEEA">
+    <div id="playerWin" data-page-node-id="qwwEFK6CbdsXtsHEg1ZdXK">
+      <canvas class="viz" id="vizHome" data-page-node-id="GI6UYacnst8Raz3jdXLAzC"></canvas>
+      <div id="npTop" data-page-node-id="4bAur8zwxxf6PJd0CQ8QEF">当前：未播放&nbsp;&nbsp;&nbsp;下一首：无</div>
+      <div id="lyricsHome" data-page-node-id="a18UJx0cCBx0oNFCPdnUaY"><div id="lyricHomeInner" data-page-node-id="3NO1WRMiOCcMteKmPgIjqM"></div></div>
+      <div id="npOverlay" data-page-node-id="vdtPljrGzR2JnH6VJ5SGgz">
+        <div id="npTitle" data-page-node-id="ekj3wCKeuCqyY7B0vxMCfl">未播放</div>
+        <div id="npSinger" data-page-node-id="0i1wdCxzhuTXgOYhenm21c">手机访问 /m 扫码点歌</div>
       </div>
     </div>
   </div>
-  <div id="homeMid">
-    <div class="card card-rank focusable" data-go="rank">排行榜</div>
-    <div class="card card-song focusable" data-go="song">歌名</div>
-    <div class="card card-singer focusable" data-go="singer">歌星</div>
-    <div class="card card-local focusable" data-go="local">本地</div>
+  <div id="homeMid" data-page-node-id="1gaZFNCqOCUK0CDdcFX2ci">
+    <div class="card card-rank focusable" data-go="rank" data-page-node-id="uibLPjsBQpy1yulOKdUwb9">排行榜</div>
+    <div class="card card-song focusable" data-go="song" data-page-node-id="2mVKYCLCYiKy1eZygRb67f">歌名</div>
+    <div class="card card-singer focusable" data-go="singer" data-page-node-id="Nn9K7RybeHvODO2J9HA45q">歌星</div>
+    <div class="card card-local focusable" data-go="local" data-page-node-id="889rM9ImuG6BSI8BGrSz5f">本地</div>
   </div>
-  <div id="homeRight">
-    <div class="card card-reg focusable" data-go="chang" style="background-image:url(/tv/assets/home_card_regular.webp)">常唱</div>
-    <div class="card card-fav focusable" data-go="fav" style="background-image:url(/tv/assets/home_card_favorite.webp)">收藏</div>
-    <div class="card card-cat focusable" data-go="cat" style="background-image:url(/tv/assets/home_card_category.webp)">分类</div>
+  <div id="homeRight" data-page-node-id="O6njXuCq7MBe2VXCGH1dgg">
+    <div class="card card-reg focusable" data-go="chang" style="background-image:url(/tv/assets/home_card_regular.webp)" data-page-node-id="bGrImUrT7mJ2R2ZwrGIBqw">常唱</div>
+    <div class="card card-fav focusable" data-go="fav" style="background-image:url(/tv/assets/home_card_favorite.webp)" data-page-node-id="V4qYsc9GLDC7OBfUC8IKh8">收藏</div>
+    <div class="card card-cat focusable" data-go="cat" style="background-image:url(/tv/assets/home_card_category.webp)" data-page-node-id="aIyGHcIxaV4CJknpn36AwA">分类</div>
   </div>
 </div>
 
 <!-- ============ 子页面通用外壳 ============ -->
-<div id="subpage" class="page">
-  <div id="subLeft">
-    <div id="subPlayer">
-      <canvas class="viz" id="vizSub"></canvas>
-      <div id="subLyrics"><div id="subLyricInner"></div></div>
-      <div id="subNp"><div class="t">未播放</div><div class="s"></div></div>
+<div id="subpage" class="page" data-page-node-id="te5HATYHo4AGiMSUEy3cv1">
+  <div id="subLeft" data-page-node-id="H4aQAaYu9Q1AVzgXQyieSI">
+    <div id="subPlayer" data-page-node-id="g9MRX3jpzGArCN42Kew6Ks">
+      <canvas class="viz" id="vizSub" data-page-node-id="H4ZrRP4Xc7wlBmmIfyzHc8"></canvas>
+      <div id="subLyrics" data-page-node-id="Shd2YGEuA6ToNp1pw1FnRB"><div id="subLyricInner" data-page-node-id="5Stig1dP41uSz7yn7S25pd"></div></div>
+      <div id="subNp" data-page-node-id="rCNPcCzH13Ef0aN5DxWlep"><div class="t" data-page-node-id="OJxl1WBmXspSY5Ul5KhZ8Q">未播放</div><div class="s" data-page-node-id="b6sxGpJLZfkjhE53IHpr2c"></div></div>
     </div>
-    <div id="kbArea">
-      <div id="kbInputRow">
-        <input id="kbInput" placeholder="搜索  输入歌名 / 歌手" readonly>
-        <div class="key-del focusable" id="keyBackspace">←</div>
-        <div class="key-clr focusable" id="keyClear">×</div>
+    <div id="kbArea" data-page-node-id="Mv2xM3tOz2bEsIkWuEQuYo">
+      <div id="kbInputRow" data-page-node-id="yLbl4SGfLYnJy3GOif90t9">
+        <input id="kbInput" placeholder="搜索  输入歌名 / 歌手" readonly data-page-node-id="kDYwhzThF2EQZ12aLSOCNb">
+        <div class="key-del focusable" id="keyBackspace" data-page-node-id="rc1iMG0hrIEf2HtrHMuHnZ">←</div>
+        <div class="key-clr focusable" id="keyClear" data-page-node-id="qOY7gjJvjCpNerlZRB0Eyy">×</div>
       </div>
-      <div id="kbMain">
-        <div id="kbModes">
-          <div class="key-mode on focusable" id="modeAbc">ABC</div>
-          <div class="key-mode focusable" id="mode123">123</div>
+      <div id="kbMain" data-page-node-id="H9d0GUk2A19mjSMnelumbH">
+        <div id="kbModes" data-page-node-id="3K1DO7ldF2yA04xGb0vAeU">
+          <div class="key-mode on focusable" id="modeAbc" data-page-node-id="BFyUNPFCPoVscwypxGz54H">ABC</div>
+          <div class="key-mode focusable" id="mode123" data-page-node-id="VltT8Ze6ABU24Itg2HWjDg">123</div>
         </div>
-        <div id="kbGrid"></div>
+        <div id="kbGrid" data-page-node-id="VpuiIo7d7iDa0uWY0O9GEd"></div>
       </div>
     </div>
   </div>
-  <div id="subRight">
-    <div id="crumb">
-      <div id="crumbHome" class="focusable" tabindex="0">‹ 主页</div>
-      <div id="crumbCur"></div>
-      <div class="sp"></div>
-      <div id="dlChip">⬇ <span id="dlChipNum">0</span></div>
-      <div id="btnBulk" class="crumb-btn focusable" tabindex="0">全库下载</div>
-      <div id="btnBatch" class="crumb-btn focusable" tabindex="0">批量下载</div>
-      <div id="btnSelAll" class="crumb-btn focusable" tabindex="0" style="display:none">全选</div>
-      <div id="btnBatchOk" class="crumb-btn focusable accent" tabindex="0" style="display:none">下载</div>
-      <div id="btnBatchCancel" class="crumb-btn focusable" tabindex="0" style="display:none">取消</div>
-      <div id="btnBack" class="crumb-btn focusable" tabindex="0">↩ 返回</div>
+  <div id="subRight" data-page-node-id="mPKKDavGClRtBddn0iwYNc">
+    <div id="crumb" data-page-node-id="Us8m94fHC9ECVsqoObjdDz">
+      <div id="crumbHome" class="focusable" tabindex="0" data-page-node-id="mVnGUv2DjN6xfAFxHtwU1V">‹ 主页</div>
+      <div id="crumbCur" data-page-node-id="9ufRZWbdv216ZHqkR1qdOd"></div>
+      <div class="sp" data-page-node-id="ksIZG3XCs6QJEdH3mYInyy"></div>
+      <div id="dlChip" data-page-node-id="M7uSG4wJypUCByONYJCX4e">⬇ <span id="dlChipNum" data-page-node-id="r4k1aH2mGzH3FZgCEIbFOt">0</span></div>
+      <div id="btnBulk" class="crumb-btn focusable" tabindex="0" data-page-node-id="68IVqsxswVIWx9CfBXnReJ">全库下载</div>
+      <div id="btnBatch" class="crumb-btn focusable" tabindex="0" data-page-node-id="QtEzVlr0zP3wUA80yRdRa7">批量下载</div>
+      <div id="btnSelAll" class="crumb-btn focusable" tabindex="0" style="display:none" data-page-node-id="Brl8aah76k6DdiR0byylxI">全选</div>
+      <div id="btnBatchOk" class="crumb-btn focusable accent" tabindex="0" style="display:none" data-page-node-id="LdpNkrIuYH1Ol07ZIkIHtP">下载</div>
+      <div id="btnBatchCancel" class="crumb-btn focusable" tabindex="0" style="display:none" data-page-node-id="yEQ7BRNTzAHEMOVOAwWYDF">取消</div>
+      <div id="btnBack" class="crumb-btn focusable" tabindex="0" data-page-node-id="uHUdqsCURiBXoFiayW1QUv">↩ 返回</div>
     </div>
-    <div id="subCats"></div>
-    <div id="songList"></div>
-    <div id="gridWrap" style="display:none"><div id="grid"></div></div>
-    <div id="pager">
-      <div class="pager focusable" id="btnPrev">上一页</div>
-      <div id="pageInfo">1 / 1</div>
-      <div class="pager focusable" id="btnNextPg" style="margin-left:auto">下一页</div>
+    <div id="subCats" data-page-node-id="6p9BlxOoxADuWiyoe02ONK"></div>
+    <div id="songList" data-page-node-id="gl7sluid1Eeav9QXoIXw38"></div>
+    <div id="gridWrap" style="display:none" data-page-node-id="hC6HDn90ktn9BTBkfESFx2"><div id="grid" data-page-node-id="HZ0wBaHdeLLprhZtQtrDUm"></div></div>
+    <div id="pager" data-page-node-id="MJQ7b9G2wvMH7JKyT0ou3K">
+      <div class="pager focusable" id="btnPrev" data-page-node-id="DoxoJvHqJFtMuzWuMoxzu5">上一页</div>
+      <div id="pageInfo" data-page-node-id="hUZmYCvSual1xvrDERt2rT">1 / 1</div>
+      <div class="pager focusable" id="btnNextPg" style="margin-left:auto" data-page-node-id="7do6xe9ebdyfhOmXewmpTu">下一页</div>
     </div>
   </div>
 </div>
 
 <!-- ============ 底部栏 ============ -->
-<div id="bottombar">
-  <div class="sp"></div>
+<div id="bottombar" data-page-node-id="PUteq9wjjcG8pMbqGb3SX7">
+  <div class="sp" data-page-node-id="OQWGLRFTiPBUD95XTWuUPK"></div>
 </div>
 
 <!-- ============ 弹层 ============ -->
-<div id="mask"></div>
-<div id="queueModal" class="modal">
-  <h3>已点歌曲</h3>
-  <div id="queueItems"></div>
+<div id="mask" data-page-node-id="1sOi7StOAYwzWG9cObeTKY"></div>
+<div id="queueModal" class="modal" data-page-node-id="F6AFdxN9yKoYXbrA0esUY6">
+  <h3 data-page-node-id="vxhWQzDJSBcvExQ4EdBphA">已点歌曲</h3>
+  <div id="queueItems" data-page-node-id="zAHZHguFEBYFjTxfi26iC0"></div>
 </div>
-<div id="toneModal" class="modal">
-  <h3>🔊 音量</h3>
-  <input type="range" id="volSlider" min="0" max="100" value="80">
+<div id="toneModal" class="modal" data-page-node-id="Q2I7InGu8MXV8FHrkbv9AZ">
+  <h3 data-page-node-id="D4muIpcVgIWR3qS8OMGMQT">🔊 音量</h3>
+  <input type="range" id="volSlider" min="0" max="100" value="80" data-page-node-id="uJbxQHaM74WkMIHoqCvqFv">
 </div>
-<div id="qrModal" class="modal">
-  <h3>扫码点歌</h3>
-  <div class="url" id="qrUrl"></div>
-  <p>手机浏览器访问上面的地址即可点歌<br>也可以在手机端管理音源与曲库</p>
-  <div class="glass-btn focusable" id="qrClose" style="margin:14px auto 0;justify-content:center">关闭</div>
+<div id="qrModal" class="modal" data-page-node-id="xd2EXPDre4hms6xJ9DoU3B">
+  <h3 data-page-node-id="Byf5ND5lLILMC3Bu3t5dL8">扫码点歌</h3>
+  <div class="url" id="qrUrl" data-page-node-id="ovV5cpEjtFPsRQ68Slro3o"></div>
+  <p data-page-node-id="B5EQug07BckolxXikmrCRJ">手机浏览器访问上面的地址即可点歌<br data-page-node-id="oZITXjStCG4bTUiQRoE0FN">也可以在手机端管理音源与曲库</p>
+  <div class="glass-btn focusable" id="qrClose" style="margin:14px auto 0;justify-content:center" data-page-node-id="MLNsMGaQ0swLIEwO2MXx2w">关闭</div>
 </div>
-<div id="bulkModal" class="modal" style="top:50%;left:50%;transform:translate(-50%,-50%);width:520px">
-  <h3>📦 全库批量下载 <span style="font-size:12px;color:rgba(224,224,224,.5)">muse.db 曲库 · 最常唱优先</span></h3>
-  <div id="bulkInfo" style="font-size:13px;color:rgba(224,224,224,.75);line-height:1.8">读取状态中…</div>
-  <div style="height:6px;background:rgba(255,255,255,.1);border-radius:3px;margin:12px 0;overflow:hidden">
-    <div id="bulkBar" style="height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .5s"></div>
+<div id="bulkModal" class="modal" style="top:50%;left:50%;transform:translate(-50%,-50%);width:520px" data-page-node-id="fmmigjlTtyONNq3tYuAgV9">
+  <h3 data-page-node-id="A15Fp6uOd8BGOhbZe7jVuu">📦 全库批量下载 <span style="font-size:12px;color:rgba(224,224,224,.5)" data-page-node-id="mGfiSsDSrsI9BliaryZ6De">muse.db 曲库 · 最常唱优先</span></h3>
+  <div id="bulkInfo" style="font-size:13px;color:rgba(224,224,224,.75);line-height:1.8" data-page-node-id="BVknEZpgD4IFI5LAgKZexk">读取状态中…</div>
+  <div style="height:6px;background:rgba(255,255,255,.1);border-radius:3px;margin:12px 0;overflow:hidden" data-page-node-id="FuAtefDgCp0FYEXzRFs4of">
+    <div id="bulkBar" style="height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .5s" data-page-node-id="84JUNyHzrPYC9eoigqegEX"></div>
   </div>
-  <div id="bulkDetail" style="font-size:12px;color:rgba(224,224,224,.55);min-height:18px"></div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:12px;color:rgba(224,224,224,.7)">
+  <div id="bulkDetail" style="font-size:12px;color:rgba(224,224,224,.55);min-height:18px" data-page-node-id="CXFRT218VbF6FOYCHREuug"></div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:12px;color:rgba(224,224,224,.7)" data-page-node-id="lsDxVa6vr7oeETXBQMliI9">
     下载区间（第 N 首 ~ 第 M 首，按最常唱排序）：
-    <input id="bulkFrom" type="number" min="1" value="1" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px">
+    <input id="bulkFrom" type="number" min="1" value="1" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px" data-page-node-id="2FK1esp39uGzQZAlmsBCFG">
     ~
-    <input id="bulkTo" type="number" min="1" value="10000" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px">
+    <input id="bulkTo" type="number" min="1" value="10000" style="width:80px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#eee;padding:6px 8px" data-page-node-id="7m1oBAm9eLYN1mGPbcY4DT">
   </div>
-  <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
-    <div class="crumb-btn focusable" id="bulkImport" tabindex="0">① 导入 muse.db</div>
-    <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0">② 开始下载</div>
-    <div class="crumb-btn focusable" id="bulkStop" tabindex="0">停止</div>
-    <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto">关闭</div>
+  <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap" data-page-node-id="z4pLtp6MnCEMcCyoRiuoUQ">
+    <div class="crumb-btn focusable" id="bulkImport" tabindex="0" data-page-node-id="DBgZHadguasvkAZwk3Ldrg">① 导入 muse.db</div>
+    <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0" data-page-node-id="zAEIq8oXDapDKPikXjqM3n">② 开始下载</div>
+    <div class="crumb-btn focusable" id="bulkStop" tabindex="0" data-page-node-id="DZ2UWb4UYHSOk0nrjz4LIn">停止</div>
+    <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto" data-page-node-id="4kFFRc8z3FYAaAZMcBzQTc">关闭</div>
   </div>
-  <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px">
+  <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px" data-page-node-id="4AOw6CRI8yc4sNgCIyzAH4">
     先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。
   </p>
 </div>
-<div id="toast"></div>
+<div id="toast" data-page-node-id="dUGS2SYmDw9vjBJGY34pzH"></div>
 
-<audio id="audio" preload="auto"></audio>
+<audio id="audio" preload="auto" data-page-node-id="0RmAhLGtLE3T8pl2zfk8Fm"></audio>
 
 <script>
 'use strict';
@@ -549,12 +549,16 @@ async function renderBoards() {
   $('#gridWrap').style.display = 'block';
   $('#grid').innerHTML = '<div class="empty" style="grid-column:1/-1">加载榜单中…</div>';
   try {
-    const { boards } = await api('/api/v1/board');
+    const { available, boards } = await api('/api/v1/muse/rank');
     $('#grid').innerHTML = '';
+    if (!available) {
+      $('#grid').innerHTML = '<div class="empty" style="grid-column:1/-1">未找到 muse.db<br>请把它放到服务器 data 目录后重启服务</div>';
+      return;
+    }
     boards.forEach((b) => {
       const c = document.createElement('div');
       c.className = 'bcard focusable'; c.tabIndex = 0;
-      c.innerHTML = `${esc(b.name)}<small>酷我榜单</small>`;
+      c.innerHTML = `${esc(b.name)}<small>${b.songCount || 0} 首</small>`;
       c.addEventListener('click', () => openBoard(b));
       $('#grid').appendChild(c);
     });
@@ -566,8 +570,19 @@ async function openBoard(b) {
   $('#songList').style.display = 'block';
   $('#songList').innerHTML = '<div class="empty">加载中…</div>';
   try {
-    if (!boardCache[b.id]) boardCache[b.id] = (await api(`/api/v1/board/songs?id=${encodeURIComponent(b.id)}`)).songs;
-    renderSongs(boardCache[b.id]);
+    if (!boardCache[b.id]) {
+      const acc = [];
+      const pageSize = 100;
+      const first = await api(`/api/v1/muse/rank/songs?id=${encodeURIComponent(b.id)}&page=1&pageSize=${pageSize}`);
+      acc.push(...first.songs);
+      const pages = Math.ceil(first.total / pageSize);
+      for (let p = 2; p <= Math.min(pages, 10); p++) {
+        const r = await api(`/api/v1/muse/rank/songs?id=${encodeURIComponent(b.id)}&page=${p}&pageSize=${pageSize}`);
+        acc.push(...r.songs);
+      }
+      boardCache[b.id] = acc;
+    }
+    renderSongs(boardCache[b.id].map((s) => ({ songId: 'mus_' + s.no, title: s.title, singer: s.singer, cached: s.cached, museNo: s.no })));
   } catch (e) { $('#songList').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
 
@@ -714,25 +729,21 @@ async function doSearch() {
   } catch (e) { $('#songList').innerHTML = `<div class="empty">搜索失败：${esc(e.message)}</div>`; }
 }
 
-// ---------- 本地曲库（分页） ----------
+// ---------- 服务器曲库（muse.db 原生 MV 曲库，服务器分页） ----------
 async function loadLibrary(page) {
   $('#songList').style.display = 'block';
   $('#songList').innerHTML = '<div class="empty">加载曲库中…</div>';
   try {
-    if (!libSongs.length) {
-      const { songs } = await api('/api/v1/library');
-      libSongs = songs;
-    }
-    libTotal = Math.max(1, Math.ceil(libSongs.length / PAGE_SIZE));
+    const r = await api(`/api/v1/library/ts?page=${page}&pageSize=${PAGE_SIZE}`);
+    libTotal = Math.max(1, Math.ceil(r.total / PAGE_SIZE));
     libPage = Math.min(Math.max(1, page), libTotal);
-    const slice = libSongs.slice((libPage - 1) * PAGE_SIZE, libPage * PAGE_SIZE);
-    lastSongs = slice.map((s) => ({ songId: s.songId, title: s.title, singer: s.singer, pic: s.pic, cached: true }));
+    lastSongs = r.songs.map((s) => ({ songId: 'ts_' + s.no, title: s.title, singer: s.singer, cached: true, tsOnly: true }));
     const list = $('#songList'); list.innerHTML = '';
-    if (!slice.length) { list.innerHTML = '<div class="empty">NAS 曲库还是空的<br>点唱过的歌会自动缓存进来</div>'; updateBatchBtns(); return; }
-    slice.forEach((s, i) => list.appendChild(songRow({ songId: s.songId, title: s.title, singer: s.singer, pic: s.pic, cached: true }, i)));
+    if (!lastSongs.length) { list.innerHTML = '<div class="empty">服务器曲库还是空的<br>先在「全库下载」导入 muse.db 并批量下载</div>'; updateBatchBtns(); return; }
+    lastSongs.forEach((s, i) => list.appendChild(songRow(s, i)));
     updateBatchBtns();
     $('#pager').style.display = 'flex';
-    $('#pageInfo').textContent = `${libPage} / ${libTotal}（共 ${libSongs.length} 首）`;
+    $('#pageInfo').textContent = `${libPage} / ${libTotal}（共 ${r.total} 首）`;
   } catch (e) { $('#songList').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
 $('#btnPrev').addEventListener('click', () => loadLibrary(libPage - 1));
@@ -777,6 +788,22 @@ async function ensureLib() {
 
 // ---------- 点歌 / 播放 ----------
 async function orderSong(s) {
+  // muse.db 榜单/曲库条目：不在网页端直接播放（MV 需视频解码，网页播放器只播音频）
+  if (String(s.songId || '').startsWith('ts_')) { toast('MV 曲目请在电视端播放'); return; }
+  if (String(s.songId || '').startsWith('mus_')) {
+    // 按曲库条目点唱：服务端按「歌名 歌手」自动匹配在线版本加入队列
+    try {
+      await api('/api/v1/queue/by-no', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ no: s.museNo || String(s.songId).slice(4), title: s.title, singer: s.singer }),
+      });
+      toast(`已点「${s.title}」`);
+      refreshQueue();
+      if (!currentSong) playNext();
+    } catch (e) { toast('点歌失败：' + e.message); }
+    return;
+  }
   try {
     await api('/api/v1/queue', {
       method: 'POST',
