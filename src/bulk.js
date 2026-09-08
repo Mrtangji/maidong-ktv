@@ -16,12 +16,18 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const { execFile } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
 
 const API_JS_REMOTE =
   'https://gitee.com/yangyachao-X/maidong-ktv/raw/master/app/src/main/assets/mobile/ktv_api.js';
 const DL_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.BULK_CONCURRENCY) || 2)); // 并发下载（每首要先换链，CDN 压力友好）
 const STATE_SAVE_EVERY = 5;      // 每完成 n 首落盘一次进度
+// 和音元反盗版占位 ts 的字节大小黑名单（这些"文件"结构合法但无法播放），可用 BULK_BLOCK_SIZES 扩展
+const BLOCK_SIZES = new Set(
+  (process.env.BULK_BLOCK_SIZES || '12050612')
+    .split(',').map((s) => Number(s.trim())).filter((n) => n > 0)
+);
 
 /** Node 版 XMLHttpRequest shim：供 ktv_api.js 的 httpGet/httpPost 使用。 */
 function installXhrShim() {
@@ -277,7 +283,7 @@ class BulkDownloader {
   }
 
   /**
-   * TS 完整性校验（轻量，不解析流内容）：
+   * TS 结构完整性校验（轻量，不解析流内容）：
    *   大小 > 0 且按 188（或 M2TS 192）字节整包对齐；
    *   首包 / 尾包 / 中部抽样包的同步字节必须是 0x47。
    * 截断、0 字节、被 HTML 错误页覆盖等损坏基本都能拦住。
@@ -303,6 +309,49 @@ class BulkDownloader {
         return true;
       } finally { fs.closeSync(fd); }
     } catch (_) { return false; }
+  }
+
+  /** 反盗版占位检测：命中字节大小黑名单（如和音元 12,050,612 字节占位 ts）。 */
+  isAntiPiracyStub(p) {
+    try { return BLOCK_SIZES.has(fs.statSync(p).size); } catch (_) { return false; }
+  }
+
+  /** ffprobe 是否可用（探测一次并缓存；BULK_FFPROBE=0 强制关闭）。 */
+  async _ffprobeAvailable() {
+    if (this._ffprobeOk !== undefined) return this._ffprobeOk;
+    this._ffprobeOk = await new Promise((resolve) => {
+      if (process.env.BULK_FFPROBE === '0') return resolve(false);
+      execFile('ffprobe', ['-version'], { timeout: 5000 }, (err) => resolve(!err));
+    });
+    return this._ffprobeOk;
+  }
+
+  /**
+   * 成片校验（下载完成后逐首调用）：返回 null 表示通过，否则返回失败原因。
+   *   1. TS 结构完整性（整包对齐 + 同步字节）
+   *   2. 反盗版占位大小黑名单
+   *   3. ffprobe 真解析（服务器镜像内置 ffmpeg；不可用或 BULK_FFPROBE=0 时自动跳过）
+   */
+  async validateSongFile(p) {
+    if (!this.checkTsIntegrity(p)) return 'ts结构不完整';
+    if (this.isAntiPiracyStub(p)) return `反盗版占位文件（${fs.statSync(p).size} 字节）`;
+    if (await this._ffprobeAvailable()) {
+      const ok = await new Promise((resolve) => {
+        execFile('ffprobe',
+          ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'json', p],
+          { timeout: 30000, maxBuffer: 1 << 20 },
+          (err) => resolve(!err));
+      });
+      if (!ok) return 'ffprobe 无法解析（非有效音视频）';
+    }
+    return null;
+  }
+
+  /** 扫库用轻量校验：结构完整性 + 反盗版占位（不含 ffprobe，10 万级文件扫不动）。 */
+  validateSongFileCheap(p) {
+    if (!this.checkTsIntegrity(p)) return 'ts结构不完整';
+    if (this.isAntiPiracyStub(p)) return `反盗版占位文件（${fs.statSync(p).size} 字节）`;
+    return null;
   }
 
   /**
@@ -334,7 +383,7 @@ class BulkDownloader {
         if (f.endsWith('.part')) { fs.unlinkSync(p); removed++; continue; }
         if (!f.endsWith('.ts')) continue;   // 其他文件不动
         if (!validNames.has(f)) { fs.unlinkSync(p); removed++; continue; }   // 孤儿 ts：目录里没有对应条目
-        if (verify && !this.checkTsIntegrity(p)) { fs.unlinkSync(p); removed++; corruptCnt++; }   // 损坏：删除待补
+        if (verify && this.validateSongFileCheap(p)) { fs.unlinkSync(p); removed++; corruptCnt++; }   // 损坏/反盗版占位：删除待补
       } catch (_) {}
       if ((removed % 200) === 0 && removed > 0) await new Promise((r) => setImmediate(r));
     }
@@ -435,6 +484,12 @@ class BulkDownloader {
           }
           if (!target) { this.state.done++; continue; }
           await this._download(url, target);
+          // 成片校验：不是有效歌曲（结构损坏 / 反盗版占位 / ffprobe 解析失败）→ 删除并计失败
+          const bad = await this.validateSongFile(target);
+          if (bad) {
+            try { fs.unlinkSync(target); } catch (_) {}
+            throw new Error(bad);
+          }
           this.state.done++;
         } catch (e) {
           this.state.failed++;
