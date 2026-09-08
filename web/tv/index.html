@@ -38,8 +38,7 @@
     background: linear-gradient(to bottom, rgba(15,6,40,.10), rgba(15,6,40,0));
     position: relative; z-index: 5;
   }
-  #topbar .logo { width: 44px; height: 44px; object-fit: contain; }
-  #topbar .brand { font-size: 22px; font-weight: 700; margin-left: 8px; }
+  #topbar .brand { font-size: 22px; font-weight: 700; }
   #btnSearchTop {
     height: 32px; margin-left: 10px; padding: 0 16px 0 12px;
     display: flex; align-items: center; font-size: 13px;
@@ -179,15 +178,20 @@
   /* 右列内容 */
   #subRight { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #crumb {
-    height: 32px; display: flex; align-items: center; padding: 0 6px;
-    background: rgba(15,6,40,.35); border-radius: 4px;
+    height: 36px; display: flex; align-items: center; padding: 0 12px;
+    background: rgba(255,255,255,.10);
+    border: 1px solid rgba(255,255,255,.28); border-radius: 20px;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 4px 16px rgba(0,0,0,.45);
   }
   #crumbHome { color: var(--accent); font-size: 14px; }
   #crumbCur { color: #fff; font-size: 14px; margin-left: 6px; }
   #crumb .sp { flex: 1; }
   .crumb-btn {
     height: 28px; margin-left: 8px; padding: 0 14px; display: flex; align-items: center;
-    font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid transparent;
+    font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid rgba(255,255,255,.33);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 2px 10px rgba(0,0,0,.35);
   }
   .crumb-btn.accent { color: var(--accent); border-color: rgba(39,204,164,.5); background: rgba(39,204,164,.12); }
   #dlChip { display: none; margin-left: 8px; font-size: 12px; color: var(--accent); align-items: center; gap: 4px; }
@@ -201,7 +205,7 @@
   .srow.batching .ord, .srow.batching .fav { display: none; }
   #btnBack {
     height: 28px; margin-left: 10px; padding: 0 14px; display: flex; align-items: center;
-    font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid transparent;
+    font-size: 12px; background: rgba(255,255,255,.14); border-radius: 14px; border: 1px solid rgba(255,255,255,.33);
   }  #subCats { display: none; margin-top: 12px; height: 28px; align-items: center; gap: 6px; overflow-x: auto; }
   #subCats.show { display: flex; }
   .cat-chip {
@@ -283,7 +287,6 @@
 
 <!-- ============ 顶部状态栏 ============ -->
 <div id="topbar" data-page-node-id="RhRIEPXyVTBo0MrphbjDGl">
-  <img class="logo" src="/tv/assets/ktv_logo.png" alt="" data-page-node-id="Fh3GgF6t0B39n5vm48Hanh">
   <div class="brand" data-page-node-id="qdyF5MSKowFZkg3N9lixLb">麦动</div>
   <div id="btnSearchTop" class="focusable" tabindex="0" data-page-node-id="IAHAa7GasYUlC7GHGV8nUo">⌕ 搜索</div>
   <div class="sp" data-page-node-id="hyO2KmsKR81TUAJyR9uVrt"></div>
@@ -1001,12 +1004,6 @@ $('#btnVocal').addEventListener('click', () => {
 $('#btnTone').addEventListener('click', () => { $('#mask').classList.add('show'); $('#toneModal').classList.add('show'); });
 $('#volSlider').addEventListener('input', () => { const v = $('#volSlider').value / 100; audio.volume = v; $('#video').volume = v; });
 $('#btnOrder').addEventListener('click', () => { refreshQueue(); $('#mask').classList.add('show'); $('#queueModal').classList.add('show'); });
-// 全屏时隐藏顶部 logo
-document.addEventListener('fullscreenchange', () => {
-  const fs = !!document.fullscreenElement;
-  const logo = document.querySelector('#topbar .logo');
-  if (logo) logo.style.display = fs ? 'none' : '';
-});
 $('#mask').addEventListener('click', closeModals);
 document.querySelectorAll('.modal').forEach((m) => m.addEventListener('click', (e) => e.stopPropagation()));
 function closeModals() {
