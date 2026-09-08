@@ -55,6 +55,7 @@ function installXhrShim() {
 class BulkDownloader {
   constructor(dataDir, musicDir) {
     this.dataDir = dataDir;
+    this.musicDir = musicDir;
     this.musicTsDir = path.join(musicDir, 'ts');
     this.museDbPath = path.join(dataDir, 'muse.db');
     this.catalogPath = path.join(dataDir, 'bulk-catalog.json');
@@ -86,6 +87,25 @@ class BulkDownloader {
 
   /** muse.db 是否可用 */
   museExists() { return fs.existsSync(this.museDbPath); }
+
+  /** 原文件名 → 目录条目 索引（惰性构建；重新导入目录后失效重建）。 */
+  _catalogIndex() {
+    if (this._fileIndex) return this._fileIndex;
+    this._fileIndex = new Map();
+    try {
+      for (const l of fs.readFileSync(this.catalogPath, 'utf8').split('\n')) {
+        if (!l) continue;
+        try { const it = JSON.parse(l); this._fileIndex.set(it.file, it); } catch (_) {}
+      }
+    } catch (_) {}
+    return this._fileIndex;
+  }
+
+  /** /ts 代理缓存落盘后调用：按 muse.db 原文件名补「歌手 - 歌名.ts」硬链接。 */
+  friendlyLinkByFile(filename) {
+    const item = this._catalogIndex().get(filename);
+    if (item) { try { this._friendlyLink(item); } catch (_) {} }
+  }
 
   catalogCount() {
     try { return fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean).length; }
@@ -123,6 +143,7 @@ class BulkDownloader {
     await new Promise((res) => out.end(res));
     fs.renameSync(tmp, this.catalogPath);
     db.close();
+    this._fileIndex = null;   // 目录重建，索引失效
     return n;
   }
 
@@ -153,6 +174,8 @@ class BulkDownloader {
     this.state.limit = this.state.total;
     this._saveState();
     fs.mkdirSync(this.musicTsDir, { recursive: true });
+    // 后台补齐已有文件的友好名硬链接（幂等，不阻塞下载）
+    setTimeout(() => this.repairLinks().catch(() => {}), 100);
     // 后台跑，不阻塞请求
     this._run().catch((e) => {
       this.state.lastError = String(e && e.message || e);
@@ -182,6 +205,55 @@ class BulkDownloader {
       from: this.state.from || 1,
       to: this.state.to || 0,
     };
+  }
+
+  /** Windows/通用非法字符安全化 + 截断。 */
+  _safeName(name) {
+    return String(name || '')
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .slice(0, 150) || '未知';
+  }
+
+  /**
+   * 为已下载的 ts 生成人类可读硬链接 music/<歌手 - 歌名>.ts：
+   * 与 music/ts/<原文件名>.ts 同一份数据（零额外空间），重名追加 [编号] 后缀。
+   */
+  _friendlyLink(item) {
+    const src = path.join(this.musicTsDir, item.file);
+    const base = `${this._safeName(item.singer || '未知歌手')} - ${this._safeName(item.title)}`;
+    const candidates = [base, `${base} [${item.no}]`, `${base} [${item.no}x${Date.now().toString(36)}]`];
+    for (const name of candidates) {
+      const link = path.join(this.musicDir, name + '.ts');
+      try {
+        if (fs.existsSync(link)) continue;      // 同名文件已在（可能是别的歌），试下一个名字
+        fs.linkSync(src, link);
+        return name + '.ts';
+      } catch (_) { /* 跨设备等异常 → 试下一个/放弃 */ }
+    }
+    return null;
+  }
+
+  /** 扫描全目录：为所有已缓存 ts 补齐友好名硬链接（幂等，后台跑）。 */
+  async repairLinks() {
+    if (this._repairing) return;
+    this._repairing = true;
+    try {
+      const lines = fs.readFileSync(this.catalogPath, 'utf8').split('\n').filter(Boolean);
+      let n = 0;
+      for (const l of lines) {
+        try {
+          const item = JSON.parse(l);
+          if (item && fs.existsSync(path.join(this.musicTsDir, item.file))) {
+            if (this._friendlyLink(item)) n++;
+          }
+        } catch (_) {}
+      }
+      if (n) console.log(`[bulk] 补齐友好名硬链接 ${n} 个`);
+    } finally {
+      this._repairing = false;
+    }
   }
 
   async _run() {
@@ -222,6 +294,7 @@ class BulkDownloader {
           if (!url) throw new Error('换链失败');
           await this._download(url, target);
           this.state.done++;
+          this._friendlyLink(item);   // 同时产出 music/<歌手 - 歌名>.ts 硬链接
         } catch (e) {
           this.state.failed++;
           this.state.lastError = `${item.title}: ${e && e.message || e}`;

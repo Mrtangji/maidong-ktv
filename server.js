@@ -549,6 +549,7 @@ async function handleTs(req, res, filename, query) {
     await proxyAndCache(src, res, { targetPath: target, contentType: tsContentType(filename) });
     const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
     console.log(`[ts] 已缓存: ${filename} (${(size / 1024 / 1024).toFixed(1)}MB)`);
+    bulk.friendlyLinkByFile(filename);   // 同步产出 music/<歌手 - 歌名>.ts 硬链接
     done();
   } catch (e) {
     fail(e);
