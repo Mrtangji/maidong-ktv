@@ -455,6 +455,11 @@ async function handleApi(req, res, url) {
     const r = bulk.start({ mode: 'scan', verify: opts.verify !== false });
     return sendJson(res, r.ok ? 200 : 409, r);
   }
+  // 编号MV补下：读取反盗版记录文件（bulk-antipiracy.txt），设备轮询换真链补下，成功移出记录
+  if (p === '/api/v1/bulk/mv' && req.method === 'POST') {
+    const r = bulk.start({ mode: 'mv' });
+    return sendJson(res, r.ok ? 200 : 409, r);
+  }
   const libRemove = p.match(/^\/api\/v1\/library\/([^/]+)$/);
   if (libRemove && req.method === 'DELETE') {
     const ok = cache.remove(decodeURIComponent(libRemove[1]));

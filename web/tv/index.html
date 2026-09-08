@@ -411,6 +411,7 @@
     <div class="crumb-btn focusable" id="bulkImport" tabindex="0" data-page-node-id="DBgZHadguasvkAZwk3Ldrg">① 导入 muse.db</div>
     <div class="crumb-btn focusable accent" id="bulkStart" tabindex="0" data-page-node-id="zAEIq8oXDapDKPikXjqM3n">② 开始下载</div>
     <div class="crumb-btn focusable accent" id="bulkScan" tabindex="0">③ 扫库补缺</div>
+    <div class="crumb-btn focusable accent" id="bulkMv" tabindex="0">④ 编号MV补下</div>
     <div class="crumb-btn focusable" id="bulkStop" tabindex="0" data-page-node-id="DZ2UWb4UYHSOk0nrjz4LIn">停止</div>
     <div class="crumb-btn focusable" id="bulkClose" tabindex="0" style="margin-left:auto" data-page-node-id="4kFFRc8z3FYAaAZMcBzQTc">关闭</div>
   </div>
@@ -419,7 +420,7 @@
     <label for="bulkVerify">扫库时校验已下载 ts（完整性 + 和音元反盗版占位检测，损坏/占位的删除后重新下载）</label>
   </div>
   <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px" data-page-node-id="4AOw6CRI8yc4sNgCIyzAH4">
-    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。「③ 扫库补缺」覆盖全库：删除目录里曲库外的无用文件和残留分片，校验 ts 完整性，只补缺失/损坏的部分。
+    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。「③ 扫库补缺」覆盖全库：删除目录里曲库外的无用文件和残留分片，校验 ts 完整性，只补缺失/损坏的部分。遇到反盗版（.ls / 12,050,612 字节占位）会自动换设备重试，仍失败则记入 data/bulk-antipiracy.txt（编号|歌手 - 歌名）并跳过；「④ 编号MV补下」读取该记录换真链补下 MV，成功自动移出记录。
   </p>
 </div>
 <div id="toast" data-page-node-id="dUGS2SYmDw9vjBJGY34pzH"></div>
@@ -524,6 +525,11 @@ function renderBulk(st) {
   if (st.mode === 'scan' && st.scanTotal) {
     phaseTxt = ` · 扫库结果：在库 <b>${st.have}</b> · 损坏 <b>${st.invalid}</b> · 已删无用 <b>${st.removed || 0}</b> · 待补 <b>${st.total}</b>`;
   }
+  if (st.mode === 'mv') {
+    phaseTxt = ` · MV补下：成功 <b>${st.done}</b> · 跳过反盗版 <b>${st.stubbed || 0}</b> · 失败 <b>${st.failed}</b>` +
+      (st.running ? ' · <span style="color:var(--accent)">补下中…</span>' : ' · 已结束');
+  }
+  if (st.antipiracy) phaseTxt += ` · 反盗版记录 <b>${st.antipiracy}</b> 首`;
   info.innerHTML += phaseTxt;
   const pct = st.total ? Math.round((st.done + st.failed) / st.total * 100) : 0;
   bar.style.width = pct + '%';
@@ -574,6 +580,14 @@ $('#bulkScan').addEventListener('click', async () => {
     const r = await api('/api/v1/bulk/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verify }) });
     if (!r.ok) toast(r.error || '启动失败');
     else toast(`扫库补缺已启动（共 ${r.total} 首${verify ? '，含完整性校验' : ''}）：扫完后自动补下缺失/损坏的歌曲`);
+  } catch (e) { toast('启动失败：' + e.message); }
+  pollBulk();
+});
+$('#bulkMv').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/v1/bulk/mv', { method: 'POST' });
+    if (!r.ok) toast(r.error || '启动失败');
+    else toast(`编号MV补下已启动（记录 ${r.total} 首）：设备轮询换真链，成功自动移出记录`);
   } catch (e) { toast('启动失败：' + e.message); }
   pollBulk();
 });

@@ -65,6 +65,7 @@ class BulkDownloader {
     this.museDbPath = path.join(dataDir, 'muse.db');
     this.catalogPath = path.join(dataDir, 'bulk-catalog.json');
     this.statePath = path.join(dataDir, 'bulk-state.json');
+    this.antipiracyPath = path.join(dataDir, 'bulk-antipiracy.txt');   // 反盗版歌曲记录：每行 编号|歌手 - 歌名
     this.apiJsPath = path.join(__dirname, 'vendor-ktv-api.js');
     installXhrShim();
     this.state = {
@@ -75,10 +76,10 @@ class BulkDownloader {
       startedAt: null,
       limit: 0,
       stopRequested: false,
-      mode: 'range',        // range=按区间下载 | scan=扫库补缺
+      mode: 'range',        // range=按区间下载 | scan=扫库补缺 | mv=编号MV补下
       phase: '',            // 扫库补缺的执行阶段：scan → download → 空（结束）
       verify: true,         // 扫库时是否校验已下载 ts 完整性
-      scanned: 0, scanTotal: 0, have: 0, invalid: 0, removed: 0,
+      scanned: 0, scanTotal: 0, have: 0, invalid: 0, removed: 0, stubbed: 0,
     };
     this._loadState();
   }
@@ -172,21 +173,24 @@ class BulkDownloader {
     if (this.state.running) return { ok: false, error: '批量下载已在进行中' };
     if (!n) return { ok: false, error: '尚未导入 muse.db 曲库（先执行导入）' };
     const scan = opts.mode === 'scan';
+    const mv = opts.mode === 'mv';
+    if (mv && !this.antipiracyCount()) return { ok: false, error: '反盗版编号记录为空（先跑一次普通下载/扫库补缺）' };
     const limit = Number(opts.limit) || 0;
     let from = Math.max(1, Math.floor(Number(opts.from) || (limit ? 1 : 1)));
     let to = Math.floor(Number(opts.to) || (limit || n));
     if (!Number.isFinite(from) || from < 1) from = 1;
     if (!Number.isFinite(to) || to < from) to = Math.min(from + 9999, n);
     to = Math.min(to, n);
-    if (scan) { from = 1; to = n; }   // 扫库补缺永远覆盖全库
+    if (scan || mv) { from = 1; to = n; }   // 扫库/编号补下覆盖全库
     this.state.running = true;
     this.state.stopRequested = false;
-    this.state.mode = scan ? 'scan' : 'range';
+    this.state.mode = scan ? 'scan' : (mv ? 'mv' : 'range');
     this.state.phase = scan ? 'scan' : 'download';
     this.state.verify = opts.verify !== false;
-    this.state.total = to - from + 1;
+    this.state.total = mv ? this.antipiracyCount() : (to - from + 1);
     this.state.done = 0;
     this.state.failed = 0;
+    this.state.stubbed = 0;
     this.state.lastError = '';
     this.state.startedAt = new Date().toISOString();
     this.state.from = from;
@@ -226,6 +230,8 @@ class BulkDownloader {
       have: this.state.have || 0,
       invalid: this.state.invalid || 0,
       removed: this.state.removed || 0,
+      stubbed: this.state.stubbed || 0,
+      antipiracy: this.antipiracyCount(),
       total: this.state.total,
       done: this.state.done,
       failed: this.state.failed,
@@ -271,6 +277,46 @@ class BulkDownloader {
       if (fs.existsSync(p)) return p;
     }
     return null;
+  }
+
+  // ----- 反盗版记录（data/bulk-antipiracy.txt，每行 编号|歌手 - 歌名） -----
+  _antipiracyMap() {
+    const map = new Map();
+    try {
+      for (const line of fs.readFileSync(this.antipiracyPath, 'utf8').split(/\r?\n/)) {
+        const s = line.trim();
+        if (!s) continue;
+        const i = s.indexOf('|');
+        if (i > 0) map.set(s.slice(0, i), s.slice(i + 1));
+      }
+    } catch (_) {}
+    return map;
+  }
+
+  antipiracyCount() { return this._antipiracyMap().size; }
+
+  /** 记录反盗版歌曲（去重，带友好名）。 */
+  _recordAntipiracy(item) {
+    if (!item || !item.no) return;
+    try {
+      const map = this._antipiracyMap();
+      map.set(String(item.no), `${this.safeName(item.singer || '未知歌手')} - ${this.safeName(item.title)}`);
+      const tmp = this.antipiracyPath + '.tmp';
+      fs.writeFileSync(tmp, Array.from(map).map(([no, nm]) => `${no}|${nm}`).join('\n') + '\n');
+      fs.renameSync(tmp, this.antipiracyPath);
+    } catch (_) {}
+  }
+
+  /** 编号补下成功后从记录中移除。 */
+  _removeAntipiracy(no) {
+    try {
+      const map = this._antipiracyMap();
+      if (map.delete(String(no))) {
+        const tmp = this.antipiracyPath + '.tmp';
+        fs.writeFileSync(tmp, Array.from(map).map(([n, nm]) => `${n}|${nm}`).join('\n') + '\n');
+        fs.renameSync(tmp, this.antipiracyPath);
+      }
+    } catch (_) {}
   }
 
   /** 下载目录中所有已存在的 .ts 文件名集合（一次 readdir，扫描比对 O(1)）。 */
@@ -365,15 +411,19 @@ class BulkDownloader {
     const entries = this.catalogEntries();
     const verify = this.state.verify !== false;
 
-    // 目录候选名全集（用于识别下载目录里的无用文件）
+    // 目录候选名全集（用于识别下载目录里的无用文件；同时保留 名→条目 反查用于占位记录）
     const validNames = new Set();
+    const nameItem = new Map();
     for (let i = from - 1; i < to; i++) {
       const item = entries[i];
-      if (item) for (const name of this._nameCandidates(item)) validNames.add(name + '.ts');
+      if (item) for (const name of this._nameCandidates(item)) {
+        validNames.add(name + '.ts');
+        nameItem.set(name + '.ts', item);
+      }
     }
 
-    // 第一步：清理下载目录里的无用文件（孤儿 .ts / 残留 .part / 损坏 .ts 校验时删）
-    let removed = 0, corruptCnt = 0;
+    // 第一步：清理下载目录里的无用文件（孤儿 .ts / 残留 .part / 损坏与占位 .ts 校验时删）
+    let removed = 0, corruptCnt = 0, stubCnt = 0;
     let dirFiles;
     try { dirFiles = fs.readdirSync(this.bulkDir); } catch (_) { dirFiles = []; }
     for (const f of dirFiles) {
@@ -383,12 +433,20 @@ class BulkDownloader {
         if (f.endsWith('.part')) { fs.unlinkSync(p); removed++; continue; }
         if (!f.endsWith('.ts')) continue;   // 其他文件不动
         if (!validNames.has(f)) { fs.unlinkSync(p); removed++; continue; }   // 孤儿 ts：目录里没有对应条目
-        if (verify && this.validateSongFileCheap(p)) { fs.unlinkSync(p); removed++; corruptCnt++; }   // 损坏/反盗版占位：删除待补
+        if (verify) {
+          const bad = this.validateSongFileCheap(p);
+          if (bad) {
+            fs.unlinkSync(p); removed++;
+            if (bad.indexOf('反盗版') >= 0) { this._recordAntipiracy(nameItem.get(f)); stubCnt++; }   // 占位：记档跳过
+            else corruptCnt++;   // 结构损坏：删除待补
+          }
+        }
       } catch (_) {}
       if ((removed % 200) === 0 && removed > 0) await new Promise((r) => setImmediate(r));
     }
     this.state.removed = removed;
     this.state.invalid = corruptCnt;
+    if (stubCnt) this.state.stubbed = (this.state.stubbed || 0) + stubCnt;
 
     // 第二步：构建缺失补下队列（含刚被删的损坏文件）
     const names = this._scanDirSet();
@@ -421,27 +479,65 @@ class BulkDownloader {
   }
 
   async _run() {
-    // 热更链路：启动时尝试拉最新 ktv_api.js（失败用本地副本）
-    try {
-      const fresh = await new Promise((resolve) => {
-        const mod = API_JS_REMOTE.startsWith('https') ? https : http;
-        const req = mod.get(API_JS_REMOTE, { timeout: 6000 }, (res) => {
-          if (res.statusCode !== 200) { resolve(null); res.resume(); return; }
-          let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(b));
+    let api;
+    if (this.state.mode === 'mv') {
+      // 编号MV补下：固定用 vendor 版 ktv_api（demo 过滤 + ls/设备轮询 + regenerateDevice），
+      // 不做 gitee 热更，避免官方脚本覆盖掉 vendor 能力。
+      delete require.cache[require.resolve(this.apiJsPath)];
+      api = new (require(this.apiJsPath).KtvApi)({ debug: false });
+    } else {
+      // 普通下载：热更链路尝试拉最新 ktv_api.js（写入独立 .fresh.js，不覆盖 vendor 原件），失败用本地 vendor 副本
+      const freshPath = this.apiJsPath + '.fresh.js';
+      let freshOk = false;
+      try {
+        const fresh = await new Promise((resolve) => {
+          const mod = API_JS_REMOTE.startsWith('https') ? https : http;
+          const req = mod.get(API_JS_REMOTE, { timeout: 6000 }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); res.resume(); return; }
+            let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(b));
+          });
+          req.on('timeout', () => req.destroy());
+          req.on('error', () => resolve(null));
         });
-        req.on('timeout', () => req.destroy());
-        req.on('error', () => resolve(null));
-      });
-      if (fresh && fresh.includes('KtvApi')) fs.writeFileSync(this.apiJsPath, fresh);
-    } catch (_) {}
+        if (fresh && fresh.includes('KtvApi')) { fs.writeFileSync(freshPath, fresh); freshOk = true; }
+      } catch (_) {}
+      const usePath = freshOk ? freshPath : this.apiJsPath;
+      delete require.cache[require.resolve(usePath)];
+      api = new (require(usePath).KtvApi)({ debug: false });
+    }
 
-    delete require.cache[require.resolve(this.apiJsPath)];
-    const { KtvApi } = require(this.apiJsPath);
-    const api = new KtvApi({ debug: false });
-
-    // 构建下载队列：扫库补缺模式全库扫描，普通模式按 [from, to] 区间
+    // 构建下载队列：编号MV补下 / 扫库补缺 / 普通区间
     let queue;
-    if (this.state.mode === 'scan') {
+    if (this.state.mode === 'mv') {
+      // 读取反盗版记录文件（编号|友好名），优先用目录条目补全元数据
+      const map = this._antipiracyMap();
+      queue = [];
+      for (const [no, nm] of map) {
+        const e = this.entryByNo(no);
+        if (e) { queue.push(e); continue; }
+        const i = nm.indexOf(' - ');
+        queue.push({
+          file: no + '.ts', no,
+          title: i >= 0 ? nm.slice(i + 3) : (nm || ('编号' + no)),
+          singer: i >= 0 ? nm.slice(0, i) : '',
+        });
+      }
+      queue = queue.filter((item) => !this.existingName(item));   // 已下载成功的直接剔除
+      this.state.phase = 'download';
+      this.state.total = queue.length;
+      this.state.done = 0;
+      this.state.failed = 0;
+      this.state.stubbed = 0;
+      this.state.limit = queue.length;
+      this.state.current = '';
+      this._saveState();
+      if (!queue.length) {
+        this.state.running = false;
+        this.state.current = '';
+        this._saveState();
+        return;
+      }
+    } else if (this.state.mode === 'scan') {
       const q = await this._buildScanQueue();
       if (!q) {   // 扫描期间请求停止
         this.state.running = false;
@@ -466,6 +562,9 @@ class BulkDownloader {
     }
     let sinceSave = 0;
 
+    const isStubReason = (s) => typeof s === 'string' && s.indexOf('反盗版') >= 0;
+    const maxAttempts = this.state.mode === 'mv' ? 3 : 1;   // mv 模式允许设备重生多轮重试
+
     const worker = async (queue) => {
       while (queue.length > 0) {
         if (this.state.stopRequested) return;
@@ -475,22 +574,53 @@ class BulkDownloader {
         this.state.current = `${item.title}（${item.singer || '未知歌手'}）`;
         let target = null;
         try {
-          const url = await api.getSongUrl(item.no, '720', false);
-          if (!url) throw new Error('换链失败');
-          // 落盘名：歌手 - 歌名.ts（冲突时 [编号] 系列后缀）
-          for (const name of this._nameCandidates(item)) {
-            const p = path.join(this.bulkDir, name + '.ts');
-            if (!fs.existsSync(p)) { target = p; break; }
+          let stubbed = false;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const url = await api.getSongUrl(item.no, '720', false, this.state.mode === 'mv' ? '0' : undefined);
+            if (!url) throw new Error('换链失败');
+            // 反盗版 .ls 链：换设备重试或记档跳过
+            if (/\.ls(\?|#|$)/i.test(url)) {
+              if (attempt < maxAttempts && typeof api.regenerateDevice === 'function') {
+                api.regenerateDevice();
+                continue;
+              }
+              stubbed = true;
+              break;
+            }
+            // 落盘名：歌手 - 歌名.ts（冲突时 [编号] 系列后缀）
+            target = null;
+            for (const name of this._nameCandidates(item)) {
+              const p = path.join(this.bulkDir, name + '.ts');
+              if (!fs.existsSync(p)) { target = p; break; }
+            }
+            if (!target) break;   // 已存在，视为完成
+            await this._download(url, target);
+            // 成片校验：不是有效歌曲 → 删除；反盗版占位 → 换设备重试或记档跳过
+            const bad = await this.validateSongFile(target);
+            if (bad) {
+              try { fs.unlinkSync(target); } catch (_) {}
+              if (isStubReason(bad)) {
+                if (attempt < maxAttempts && typeof api.regenerateDevice === 'function') {
+                  api.regenerateDevice();
+                  continue;
+                }
+                stubbed = true;
+                break;
+              }
+              throw new Error(bad);
+            }
+            stubbed = false;
+            break;
           }
-          if (!target) { this.state.done++; continue; }
-          await this._download(url, target);
-          // 成片校验：不是有效歌曲（结构损坏 / 反盗版占位 / ffprobe 解析失败）→ 删除并计失败
-          const bad = await this.validateSongFile(target);
-          if (bad) {
-            try { fs.unlinkSync(target); } catch (_) {}
-            throw new Error(bad);
+          if (stubbed) {
+            // 反盗版：记档（编号|歌手 - 歌名）并跳过，不计失败
+            this._recordAntipiracy(item);
+            this.state.stubbed = (this.state.stubbed || 0) + 1;
+            this.state.current = `跳过反盗版：${item.title}（${item.singer || '未知歌手'}）`;
+          } else {
+            this.state.done++;
+            if (this.state.mode === 'mv') this._removeAntipiracy(item.no);   // 补下成功，移出记录
           }
-          this.state.done++;
         } catch (e) {
           this.state.failed++;
           this.state.lastError = `${item.title}: ${e && e.message || e}`;
@@ -500,7 +630,8 @@ class BulkDownloader {
       }
     };
 
-    const workers = Array.from({ length: DL_CONCURRENCY }, () => worker(queue));
+    // mv 模式单线程：同一 api 实例的设备重生不可并发
+    const workers = Array.from({ length: this.state.mode === 'mv' ? 1 : DL_CONCURRENCY }, () => worker(queue));
     await Promise.all(workers);
     this.state.running = false;
     this.state.current = '';
