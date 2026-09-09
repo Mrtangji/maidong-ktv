@@ -530,6 +530,8 @@ function renderBulk(st) {
       (st.running ? ' · <span style="color:var(--accent)">补下中…</span>' : ' · 已结束');
   }
   if (st.antipiracy) phaseTxt += ` · 反盗版记录 <b>${st.antipiracy}</b> 首`;
+  if (st.failedLog) phaseTxt += ` · 失败记录 <b>${st.failedLog}</b> 首`;
+  phaseTxt += '<span style="opacity:.55;font-size:11px">（记录：data/bulk-antipiracy.txt · data/bulk-failed.txt，每行 编号|歌手 - 歌名|原因）</span>';
   info.innerHTML += phaseTxt;
   const pct = st.total ? Math.round((st.done + st.failed) / st.total * 100) : 0;
   bar.style.width = pct + '%';

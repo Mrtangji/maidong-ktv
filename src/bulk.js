@@ -65,7 +65,8 @@ class BulkDownloader {
     this.museDbPath = path.join(dataDir, 'muse.db');
     this.catalogPath = path.join(dataDir, 'bulk-catalog.json');
     this.statePath = path.join(dataDir, 'bulk-state.json');
-    this.antipiracyPath = path.join(dataDir, 'bulk-antipiracy.txt');   // 反盗版歌曲记录：每行 编号|歌手 - 歌名
+    this.antipiracyPath = path.join(dataDir, 'bulk-antipiracy.txt');   // 反盗版歌曲记录：每行 编号|歌手 - 歌名|原因
+    this.failedLogPath = path.join(dataDir, 'bulk-failed.txt');        // 下载失败记录：每行 编号|歌手 - 歌名|原因
     this.apiJsPath = path.join(__dirname, 'vendor-ktv-api.js');
     installXhrShim();
     this.state = {
@@ -232,6 +233,7 @@ class BulkDownloader {
       removed: this.state.removed || 0,
       stubbed: this.state.stubbed || 0,
       antipiracy: this.antipiracyCount(),
+      failedLog: this._failedMap().size,
       total: this.state.total,
       done: this.state.done,
       failed: this.state.failed,
@@ -279,31 +281,62 @@ class BulkDownloader {
     return null;
   }
 
-  // ----- 反盗版记录（data/bulk-antipiracy.txt，每行 编号|歌手 - 歌名） -----
+  // ----- 反盗版/失败记录（data/bulk-antipiracy.txt 与 data/bulk-failed.txt，每行 编号|歌手 - 歌名|原因） -----
   _antipiracyMap() {
+    return this._loadNoNameReasonMap(this.antipiracyPath);
+  }
+
+  _failedMap() {
+    return this._loadNoNameReasonMap(this.failedLogPath);
+  }
+
+  /** 读取「编号|友好名[|原因]」记录文件 → Map(no → {name, reason})。 */
+  _loadNoNameReasonMap(p) {
     const map = new Map();
     try {
-      for (const line of fs.readFileSync(this.antipiracyPath, 'utf8').split(/\r?\n/)) {
+      for (const line of fs.readFileSync(p, 'utf8').split(/\r?\n/)) {
         const s = line.trim();
         if (!s) continue;
-        const i = s.indexOf('|');
-        if (i > 0) map.set(s.slice(0, i), s.slice(i + 1));
+        const parts = s.split('|');
+        if (parts.length >= 2 && parts[0]) {
+          map.set(parts[0], { name: parts.slice(1, parts.length - (parts.length >= 3 ? 1 : 0)).join('|') || '未知', reason: parts.length >= 3 ? parts[parts.length - 1] : '' });
+        }
       }
     } catch (_) {}
     return map;
   }
 
+  _writeNoNameReasonMap(p, map) {
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, Array.from(map).map(([no, v]) => `${no}|${v.name}|${v.reason || '反盗版占位'}`).join('\n') + '\n');
+    fs.renameSync(tmp, p);
+  }
+
   antipiracyCount() { return this._antipiracyMap().size; }
 
-  /** 记录反盗版歌曲（去重，带友好名）。 */
-  _recordAntipiracy(item) {
+  /** 记录反盗版歌曲（去重，带友好名与原因）。 */
+  _recordAntipiracy(item, reason) {
     if (!item || !item.no) return;
     try {
       const map = this._antipiracyMap();
-      map.set(String(item.no), `${this.safeName(item.singer || '未知歌手')} - ${this.safeName(item.title)}`);
-      const tmp = this.antipiracyPath + '.tmp';
-      fs.writeFileSync(tmp, Array.from(map).map(([no, nm]) => `${no}|${nm}`).join('\n') + '\n');
-      fs.renameSync(tmp, this.antipiracyPath);
+      map.set(String(item.no), {
+        name: `${this.safeName(item.singer || '未知歌手')} - ${this.safeName(item.title)}`,
+        reason: reason || '反盗版占位',
+      });
+      this._writeNoNameReasonMap(this.antipiracyPath, map);
+    } catch (_) {}
+  }
+
+  /** 记录下载失败歌曲（去重，带原因）。 */
+  _recordFailed(item, reason) {
+    if (!item || !item.no) return;
+    try {
+      const map = this._failedMap();
+      map.set(String(item.no), {
+        name: `${this.safeName(item.singer || '未知歌手')} - ${this.safeName(item.title)}`,
+        reason: String(reason || '').slice(0, 200) || '未知原因',
+      });
+      this._writeNoNameReasonMap(this.failedLogPath, map);
     } catch (_) {}
   }
 
@@ -312,9 +345,17 @@ class BulkDownloader {
     try {
       const map = this._antipiracyMap();
       if (map.delete(String(no))) {
-        const tmp = this.antipiracyPath + '.tmp';
-        fs.writeFileSync(tmp, Array.from(map).map(([n, nm]) => `${n}|${nm}`).join('\n') + '\n');
-        fs.renameSync(tmp, this.antipiracyPath);
+        this._writeNoNameReasonMap(this.antipiracyPath, map);
+      }
+    } catch (_) {}
+  }
+
+  /** 补下成功后同时从失败记录中移除。 */
+  _removeFailed(no) {
+    try {
+      const map = this._failedMap();
+      if (map.delete(String(no))) {
+        this._writeNoNameReasonMap(this.failedLogPath, map);
       }
     } catch (_) {}
   }
@@ -382,18 +423,27 @@ class BulkDownloader {
     if (!this.checkTsIntegrity(p)) return 'ts结构不完整';
     if (this.isAntiPiracyStub(p)) return `反盗版占位文件（${fs.statSync(p).size} 字节）`;
     if (await this._ffprobeAvailable()) {
-      const ok = await new Promise((resolve) => {
-        execFile('ffprobe',
-          ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'json', p],
-          { timeout: 30000, maxBuffer: 1 << 20 },
-          (err) => resolve(!err));
-      });
-      if (!ok) return 'ffprobe 无法解析（非有效音视频）';
+      const bad = await this._ffprobeCheck(p);
+      if (bad) return bad;
     }
     return null;
   }
 
-  /** 扫库用轻量校验：结构完整性 + 反盗版占位（不含 ffprobe，10 万级文件扫不动）。 */
+  /**
+   * ffprobe 深检（快速探测模式）：真解析文件，解不出格式/无法渲染 → 无效。
+   * probesize/analyzeduration 限制探测窗口，单个文件几十毫秒级。
+   */
+  _ffprobeCheck(p) {
+    return new Promise((resolve) => {
+      execFile('ffprobe',
+        ['-v', 'error', '-probesize', '4M', '-analyzeduration', '8M',
+         '-show_entries', 'format=format_name', '-of', 'json', p],
+        { timeout: 20000, maxBuffer: 1 << 20 },
+        (err) => resolve(err ? 'ffprobe 无法解析（无法渲染）' : null));
+    });
+  }
+
+  /** 扫库用轻量校验：结构完整性 + 反盗版占位（不含 ffprobe）。 */
   validateSongFileCheap(p) {
     if (!this.checkTsIntegrity(p)) return 'ts结构不完整';
     if (this.isAntiPiracyStub(p)) return `反盗版占位文件（${fs.statSync(p).size} 字节）`;
@@ -422,30 +472,51 @@ class BulkDownloader {
       }
     }
 
-    // 第一步：清理下载目录里的无用文件（孤儿 .ts / 残留 .part / 损坏与占位 .ts 校验时删）
-    let removed = 0, corruptCnt = 0, stubCnt = 0;
+    // 第一步：清理下载目录里的无用文件（孤儿 .ts / 残留 .part / 损坏·占位·无法渲染 .ts 校验时删）
+    // 轻量校验（结构+占位）先过滤一遍，通过的再过 ffprobe 真解析，拦住「结构合法但无法渲染」的文件
+    let removed = 0, corruptCnt = 0, stubCnt = 0, probed = 0;
     let dirFiles;
     try { dirFiles = fs.readdirSync(this.bulkDir); } catch (_) { dirFiles = []; }
-    for (const f of dirFiles) {
+    const probeOk = verify ? await this._ffprobeAvailable() : false;
+    const PROBE_BATCH = 4;   // ffprobe 并发探测路数
+    for (let i = 0; i < dirFiles.length; i += PROBE_BATCH) {
       if (this.state.stopRequested) return null;
-      const p = path.join(this.bulkDir, f);
-      try {
-        if (f.endsWith('.part')) { fs.unlinkSync(p); removed++; continue; }
-        if (!f.endsWith('.ts')) continue;   // 其他文件不动
-        if (!validNames.has(f)) { fs.unlinkSync(p); removed++; continue; }   // 孤儿 ts：目录里没有对应条目
-        if (verify) {
-          const bad = this.validateSongFileCheap(p);
-          if (bad) {
-            fs.unlinkSync(p); removed++;
-            if (bad.indexOf('反盗版') >= 0) { this._recordAntipiracy(nameItem.get(f)); stubCnt++; }   // 占位：记档跳过
-            else corruptCnt++;   // 结构损坏：删除待补
+      const chunk = dirFiles.slice(i, i + PROBE_BATCH);
+      const results = await Promise.all(chunk.map(async (f) => {
+        const p = path.join(this.bulkDir, f);
+        try {
+          if (f.endsWith('.part')) { fs.unlinkSync(p); return 'removed'; }
+          if (!f.endsWith('.ts')) return null;   // 其他文件不动
+          if (!validNames.has(f)) { fs.unlinkSync(p); return 'removed'; }   // 孤儿 ts：目录里没有对应条目
+          if (verify) {
+            let bad = this.validateSongFileCheap(p);
+            if (!bad && probeOk) {
+              probed++;
+              bad = await this._ffprobeCheck(p);   // 结构合法但解不出音视频 → 无法渲染，同样无效
+            }
+            if (bad) {
+              fs.unlinkSync(p);
+              if (bad.indexOf('反盗版') >= 0) { this._recordAntipiracy(nameItem.get(f), bad); return 'stub'; }
+              return 'corrupt';
+            }
           }
-        }
-      } catch (_) {}
-      if ((removed % 200) === 0 && removed > 0) await new Promise((r) => setImmediate(r));
+        } catch (_) {}
+        return null;
+      }));
+      for (const r of results) {
+        if (r === 'removed') removed++;
+        else if (r === 'stub') { removed++; stubCnt++; }
+        else if (r === 'corrupt') { removed++; corruptCnt++; }
+      }
+      if ((i / PROBE_BATCH) % 25 === 0) {
+        this.state.current = `清理校验中 ${Math.min(i + PROBE_BATCH, dirFiles.length)}/${dirFiles.length}`;
+        this._saveState();
+        await new Promise((r) => setImmediate(r));   // 让出事件循环，不卡 HTTP 服务
+      }
     }
     this.state.removed = removed;
     this.state.invalid = corruptCnt;
+    this.state.probed = probed;
     if (stubCnt) this.state.stubbed = (this.state.stubbed || 0) + stubCnt;
 
     // 第二步：构建缺失补下队列（含刚被删的损坏文件）
@@ -509,10 +580,11 @@ class BulkDownloader {
     // 构建下载队列：编号MV补下 / 扫库补缺 / 普通区间
     let queue;
     if (this.state.mode === 'mv') {
-      // 读取反盗版记录文件（编号|友好名），优先用目录条目补全元数据
+      // 读取反盗版记录文件（编号|友好名|原因），优先用目录条目补全元数据
       const map = this._antipiracyMap();
       queue = [];
-      for (const [no, nm] of map) {
+      for (const [no, info] of map) {
+        const nm = info.name || '';
         const e = this.entryByNo(no);
         if (e) { queue.push(e); continue; }
         const i = nm.indexOf(' - ');
@@ -573,6 +645,7 @@ class BulkDownloader {
         if (this.existingName(item)) { this.state.done++; continue; } // 已下载（歌手 - 歌名.ts），秒过
         this.state.current = `${item.title}（${item.singer || '未知歌手'}）`;
         let target = null;
+        let stubReason = '';
         try {
           let stubbed = false;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -585,6 +658,7 @@ class BulkDownloader {
                 continue;
               }
               stubbed = true;
+              stubReason = '.ls 加密占位链';
               break;
             }
             // 落盘名：歌手 - 歌名.ts（冲突时 [编号] 系列后缀）
@@ -605,6 +679,7 @@ class BulkDownloader {
                   continue;
                 }
                 stubbed = true;
+                stubReason = bad;
                 break;
               }
               throw new Error(bad);
@@ -613,18 +688,28 @@ class BulkDownloader {
             break;
           }
           if (stubbed) {
-            // 反盗版：记档（编号|歌手 - 歌名）并跳过，不计失败
-            this._recordAntipiracy(item);
+            // 反盗版：记档（编号|歌手 - 歌名|原因）并跳过，不计失败
+            this._recordAntipiracy(item, stubReason);
             this.state.stubbed = (this.state.stubbed || 0) + 1;
             this.state.current = `跳过反盗版：${item.title}（${item.singer || '未知歌手'}）`;
           } else {
             this.state.done++;
+            this._removeFailed(item.no);
             if (this.state.mode === 'mv') this._removeAntipiracy(item.no);   // 补下成功，移出记录
           }
         } catch (e) {
-          this.state.failed++;
-          this.state.lastError = `${item.title}: ${e && e.message || e}`;
-          if (target) { try { fs.unlinkSync(target + '.part'); } catch (_) {} }
+          const msg = String(e && e.message || e);
+          if (isStubReason(msg)) {
+            // 下载阶段拦截到的占位（如 Content-Length 命中黑名单）：同样记档跳过，不计失败
+            this._recordAntipiracy(item, msg);
+            this.state.stubbed = (this.state.stubbed || 0) + 1;
+            this.state.current = `跳过反盗版：${item.title}（${item.singer || '未知歌手'}）`;
+          } else {
+            this.state.failed++;
+            this.state.lastError = `${item.title}: ${msg}`;
+            this._recordFailed(item, msg);   // 失败原因写入 bulk-failed.txt
+            if (target) { try { fs.unlinkSync(target + '.part'); } catch (_) {} }
+          }
         }
         if (++sinceSave >= STATE_SAVE_EVERY) { sinceSave = 0; this._saveState(); }
       }
@@ -653,6 +738,14 @@ class BulkDownloader {
           res.resume();
           file.close(() => fs.unlink(target + '.part', () => {}));
           return reject(new Error('HTTP ' + res.statusCode));
+        }
+        // 反盗版拦截（下载时中止，不落盘）：Content-Length 命中占位字节黑名单 → 一个字节都不写
+        const clen = Number(res.headers['content-length']) || 0;
+        if (clen && BLOCK_SIZES.has(clen)) {
+          res.destroy();
+          file.destroy();
+          try { fs.unlinkSync(target + '.part'); } catch (_) {}
+          return reject(new Error(`反盗版占位文件（${clen} 字节）`));
         }
         res.pipe(file);
         file.on('finish', () => file.close(() => fs.rename(target + '.part', target, resolve)));
