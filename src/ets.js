@@ -141,7 +141,7 @@ function isValidTsStream(file) {
  * 返回 { changed, decrypted, stripped }；changed=false 表示无需处理（已是标准 TS）。
  * 处理失败抛异常，调用方自行决定回退策略。
  */
-async function normalizeFile(inputPath) {
+async function normalizeFile(inputPath, signal) {
   const stat = fs.statSync(inputPath);
   const size = stat.size;
   const result = { changed: false, decrypted: false, stripped: false };
@@ -167,8 +167,8 @@ async function normalizeFile(inputPath) {
     // 有签名：AES-256-ECB 分段解密 + 剥头（与安卓 TsDecryptor 完全一致）
     const cipher = crypto.createDecipheriv('aes-256-ecb', signed.key, null);
     cipher.setAutoPadding(false);
-    const inStream = fs.createReadStream(inputPath, { start: HEADER_SIZE, signal });
-    const outStream = fs.createWriteStream(tmp, { signal });
+    const inStream = fs.createReadStream(inputPath, { start: HEADER_SIZE, signal: signal || undefined });
+    const outStream = fs.createWriteStream(tmp, { signal: signal || undefined });
     await new Promise((resolve, reject) => {
       let segmentIndex = 0;
       let rest = Buffer.alloc(0);
@@ -216,7 +216,7 @@ async function normalizeFile(inputPath) {
     const off = detectHeaderOffset(size, probe);
     if (!off) throw new Error('无法识别的 ts 文件头');
     await new Promise((resolve, reject) => {
-      const rd = fs.createReadStream(inputPath, { start: off });
+      const rd = fs.createReadStream(inputPath, { start: off, signal: signal || undefined });
       const wr = fs.createWriteStream(tmp);
       rd.on('error', reject); wr.on('error', reject);
       wr.on('finish', resolve);

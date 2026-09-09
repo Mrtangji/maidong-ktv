@@ -24,6 +24,10 @@ const API_JS_REMOTE =
   'https://gitee.com/yangyachao-X/maidong-ktv/raw/master/app/src/main/assets/mobile/ktv_api.js';
 const DL_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.BULK_CONCURRENCY) || 2)); // 并发下载（每首要先换链，CDN 压力友好）
 const STATE_SAVE_EVERY = 5;      // 每完成 n 首落盘一次进度
+// 单曲多线程分段下载：CDN 支持 Range（实测 4~8 路并发 206），切成 N 段并行拉再拼接。
+// 任一段失败（含 CDN 瞬时 416 限速）自动回退单流下载。
+const SEGMENTS = Math.max(1, Math.min(16, Number(process.env.BULK_SEGMENTS) || 6));
+const SEG_MIN_SIZE = 8 * 1024 * 1024;   // 小于 8MB 的文件不多线程（单流足够快）
 // 和音元反盗版占位 ts 的字节大小黑名单（这些"文件"结构合法但无法播放），可用 BULK_BLOCK_SIZES 扩展
 const BLOCK_SIZES = new Set(
   (process.env.BULK_BLOCK_SIZES || '12050612')
@@ -683,6 +687,15 @@ class BulkDownloader {
 
     const isStubReason = (s) => typeof s === 'string' && s.indexOf('反盗版') >= 0;
     const maxAttempts = this.state.mode === 'mv' ? 3 : 1;   // mv 模式允许设备重生多轮重试
+    const STOPPED = new Error('已停止');   // 哨兵：停止中断不算失败
+    const SONG_TIMEOUT_MS = Math.max(60, Number(process.env.BULK_SONG_TIMEOUT) || 300) * 1000;   // 单曲整体超时（默认 5 分钟），超时跳过
+
+    // 清理一首歌的所有半成品（.part 与各分段 .segN）
+    const cleanupSong = (target) => {
+      if (!target) return;
+      try { fs.unlinkSync(target + '.part'); } catch (_) {}
+      for (let i = 0; i < SEGMENTS; i++) { try { fs.unlinkSync(target + '.seg' + i); } catch (_) {} }
+    };
 
     const worker = async (queue) => {
       while (queue.length > 0) {
@@ -693,11 +706,20 @@ class BulkDownloader {
         this.state.current = `${item.title}（${item.singer || '未知歌手'}）`;
         let target = null;
         let stubReason = '';
+        // 单曲超时看门狗：到点中断本首歌（AbortSignal 级联），跳过计失败，不再无限等
+        let timedOut = false;
+        const songAc = new AbortController();
+        const runSignal = this._abort ? this._abort.signal : null;
+        const songSignal = (runSignal && typeof AbortSignal.any === 'function')
+          ? AbortSignal.any([runSignal, songAc.signal]) : songAc.signal;
+        const songTimer = setTimeout(() => { timedOut = true; songAc.abort(); }, SONG_TIMEOUT_MS);
+        if (songTimer.unref) songTimer.unref();
         try {
           let stubbed = false;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const url = await api.getSongUrl(item.no, '720', false, this.state.mode === 'mv' ? '0' : undefined);
             if (this.state.stopRequested) throw STOPPED;
+            if (timedOut) throw new Error(`单曲处理超时（${SONG_TIMEOUT_MS / 1000}s），已跳过`);
             if (!url) throw new Error('换链失败');
             // 反盗版 .ls 链：换设备重试或记档跳过
             if (/\.ls(\?|#|$)/i.test(url)) {
@@ -716,11 +738,12 @@ class BulkDownloader {
               if (!fs.existsSync(p)) { target = p; break; }
             }
             if (!target) break;   // 已存在，视为完成
-            await this._download(url, target, 3, this._abort ? this._abort.signal : null);
+            await this._downloadSmart(url, target, songSignal);
             if (this.state.stopRequested) throw STOPPED;
+            if (timedOut) throw new Error(`单曲处理超时（${SONG_TIMEOUT_MS / 1000}s），已跳过`);
             // 官方 E/ts（私有头 / AES 分段加密）：规范化成标准 TS，否则无法播放/转码
             try {
-              const norm = await ets.normalizeFile(target, this._abort ? this._abort.signal : null);
+              const norm = await ets.normalizeFile(target, songSignal);
               if (norm.changed) this.state.etsStripped = (this.state.etsStripped || 0) + 1;
             } catch (e) {
               if (this.state.stopRequested) throw STOPPED;
@@ -757,22 +780,34 @@ class BulkDownloader {
           }
         } catch (e) {
           if (e === STOPPED || (e && e.name === 'AbortError') || this.state.stopRequested) {
-            // 停止中断：清理半成品后静默退出，不计失败
-            if (target) { try { fs.unlinkSync(target + '.part'); } catch (_) {} }
-            return;
-          }
-          const msg = String(e && e.message || e);
-          if (isStubReason(msg)) {
-            // 下载阶段拦截到的占位（如 Content-Length 命中黑名单）：同样记档跳过，不计失败
-            this._recordAntipiracy(item, msg);
-            this.state.stubbed = (this.state.stubbed || 0) + 1;
-            this.state.current = `跳过反盗版：${item.title}（${item.singer || '未知歌手'}）`;
-          } else {
+            if (this.state.stopRequested) {
+              // 停止中断：清理半成品后静默退出，不计失败
+              cleanupSong(target);
+              clearTimeout(songTimer);
+              return;
+            }
+            // 单曲超时的 AbortError（非停止）：按超时跳过处理
+            const msg = `单曲处理超时（${SONG_TIMEOUT_MS / 1000}s），已跳过`;
             this.state.failed++;
             this.state.lastError = `${item.title}: ${msg}`;
-            this._recordFailed(item, msg);   // 失败原因写入 bulk-failed.txt
-            if (target) { try { fs.unlinkSync(target + '.part'); } catch (_) {} }
+            this._recordFailed(item, msg);
+            cleanupSong(target);
+          } else {
+            const msg = String(e && e.message || e);
+            if (isStubReason(msg)) {
+              // 下载阶段拦截到的占位（如 Content-Length 命中黑名单）：同样记档跳过，不计失败
+              this._recordAntipiracy(item, msg);
+              this.state.stubbed = (this.state.stubbed || 0) + 1;
+              this.state.current = `跳过反盗版：${item.title}（${item.singer || '未知歌手'}）`;
+            } else {
+              this.state.failed++;
+              this.state.lastError = `${item.title}: ${msg}`;
+              this._recordFailed(item, msg);   // 失败原因写入 bulk-failed.txt
+              cleanupSong(target);
+            }
           }
+        } finally {
+          clearTimeout(songTimer);
         }
         if (++sinceSave >= STATE_SAVE_EVERY) { sinceSave = 0; this._saveState(); }
       }
@@ -780,12 +815,111 @@ class BulkDownloader {
 
     // mv 模式单线程：同一 api 实例的设备重生不可并发
     const workers = Array.from({ length: this.state.mode === 'mv' ? 1 : DL_CONCURRENCY }, () => worker(queue));
-    await Promise.all(workers);
+    await Promise.allSettled(workers);   // 单个 worker 意外死亡不拖垮整体，其余继续收尾
     clearTimeout(this._stopTimer);
     this.state.running = false;
     this.state.current = '';
     this.state.phase = '';
     this._saveState();
+  }
+
+  /**
+   * 智能下载入口：先 Range 探测拿总大小，命中反盗版直接拦截（一个字节不拉）；
+   * 支持 Range 且文件够大 → 多线程分段并行下载；否则/失败 → 回退单流 _download。
+   */
+  async _downloadSmart(url, target, signal) {
+    if (SEGMENTS <= 1) return this._download(url, target, 3, signal);
+    const probe = await new Promise((resolve) => {
+      const mod = url.startsWith('https') ? https : http;
+      const req = mod.get(url, {
+        timeout: 20000, signal,
+        headers: { Accept: '*/*', Range: 'bytes=0-1' },
+      }, (res) => {
+        res.resume();
+        resolve({ status: res.statusCode, cr: res.headers['content-range'] || '' });
+      });
+      req.on('timeout', () => req.destroy(new Error('探测超时')));
+      req.on('error', (e) => resolve({ err: e }));
+    });
+    if (probe.err || probe.status !== 206) return this._download(url, target, 3, signal);   // 不支持 Range
+    const m = /\/(\d+)\s*$/.exec(probe.cr);
+    const total = m ? Number(m[1]) : 0;
+    if (total && BLOCK_SIZES.has(total)) throw new Error(`反盗版占位文件（${total} 字节）`);
+    if (!total || total < SEG_MIN_SIZE) return this._download(url, target, 3, signal);
+    try {
+      await this._downloadMultiSeg(url, target, total, signal);
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if ((e && e.name === 'AbortError') || msg.indexOf('已停止') >= 0) throw e;   // 停止不回退
+      // 任一段失败（CDN 瞬时 416 限速等）→ 回退单流整段
+      return this._download(url, target, 3, signal);
+    }
+  }
+
+  /** 多线程分段：N 段并行 Range 下载到 .segN，全部成功后顺序拼接为 .part 再落正名。 */
+  async _downloadMultiSeg(url, target, size, signal) {
+    const n = Math.min(SEGMENTS, Math.max(2, Math.floor(size / (1024 * 1024))));
+    const chunk = Math.floor(size / n);
+    const bounds = [];
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+      const end = (i === n - 1) ? size - 1 : s + chunk - 1;
+      bounds.push([s, end]);
+      s += chunk;
+    }
+    try {
+      await Promise.all(bounds.map(([a, b], i) =>
+        this._segRange(url, target + '.seg' + i, a, b, signal)));
+    } catch (e) {
+      for (let i = 0; i < n; i++) { try { fs.unlinkSync(target + '.seg' + i); } catch (_) {} }
+      throw e;
+    }
+    // 顺序拼接所有段 → target.part
+    const out = fs.createWriteStream(target + '.part');
+    try {
+      for (let i = 0; i < n; i++) {
+        const segPath = target + '.seg' + i;
+        const data = fs.readFileSync(segPath);
+        if (!out.write(data)) await new Promise((r) => out.once('drain', r));
+        fs.unlinkSync(segPath);
+      }
+    } catch (e) {
+      try { out.destroy(); } catch (_) {}
+      try { fs.unlinkSync(target + '.part'); } catch (_) {}
+      throw e;
+    }
+    await new Promise((resolve) => out.end(resolve));
+    await fs.promises.rename(target + '.part', target);
+  }
+
+  /** 单段 Range 下载（206 校验，超时/中断自动清理段文件）。 */
+  _segRange(url, dest, start, end, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(new Error('已停止'));
+      const mod = url.startsWith('https') ? https : http;
+      const req = mod.get(url, {
+        timeout: 60000, signal,
+        headers: { Accept: '*/*', Range: `bytes=${start}-${end}` },
+      }, (res) => {
+        if (res.statusCode !== 206) {
+          res.resume();
+          return reject(new Error('SEG_NOT_206:' + res.statusCode));
+        }
+        const f = fs.createWriteStream(dest, { signal: signal || undefined });
+        res.pipe(f);
+        f.on('finish', () => f.close(resolve));
+        f.on('error', (e) => {
+          try { req.destroy(); } catch (_) {}
+          try { fs.unlinkSync(dest); } catch (_) {}
+          reject(e);
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('下载超时')));
+      req.on('error', (e) => {
+        try { fs.unlinkSync(dest); } catch (_) {}
+        reject(e);
+      });
+    });
   }
 
   _download(url, target, redirectsLeft = 3, signal = null) {

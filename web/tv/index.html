@@ -420,7 +420,7 @@
     <label for="bulkVerify">扫库时校验已下载 ts（完整性 + 和音元反盗版占位检测，损坏/占位的删除后重新下载）</label>
   </div>
   <p style="font-size:11px;color:rgba(224,224,224,.45);margin-top:10px" data-page-node-id="4AOw6CRI8yc4sNgCIyzAH4">
-    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。「③ 扫库补缺」覆盖全库：删除目录里曲库外的无用文件和残留分片，校验 ts 完整性，只补缺失/损坏的部分。遇到反盗版（.ls / 12,050,612 字节占位）会自动换设备重试，仍失败则记入 data/bulk-antipiracy.txt（编号|歌手 - 歌名）并跳过；「④ 编号MV补下」读取该记录换真链补下 MV，成功自动移出记录。
+    先把手机上的 muse.db（/storage/emulated/0/MaidongKTV/database/muse.db）拷到服务器 data 目录，再点导入；文件按 muse.db 原名缓存到 music/ts/，与电视端完全对应。暂停/重启服务后可继续（自动跳过已下载）。「③ 扫库补缺」覆盖全库：删除目录里曲库外的无用文件和残留分片，校验 ts 完整性，只补缺失/损坏的部分。下载为多线程分段（默认 6 线程，BULK_SEGMENTS 可调；歌曲并发 BULK_CONCURRENCY 默认 2），CDN 限速时自动回退单流。遇到反盗版（.ls / 12,050,612 字节占位）会自动换设备重试，仍失败则记入 data/bulk-antipiracy.txt（编号|歌手 - 歌名）并跳过；「④ 编号MV补下」读取该记录换真链补下 MV，成功自动移出记录。
   </p>
 </div>
 <div id="toast" data-page-node-id="dUGS2SYmDw9vjBJGY34pzH"></div>
