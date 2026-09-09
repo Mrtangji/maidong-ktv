@@ -128,6 +128,7 @@ const bulk = new BulkDownloader(DATA_DIR, BULK_DIR);
 
 // MV → HLS 转封装缓存（网页端 <video>+hls.js 播放；骏耀同思路，-c copy 秒级）
 const { HlsCache } = require('./src/hls');
+const ets = require('./src/ets');
 const hlsCache = new HlsCache(process.env.HLS_DIR || path.join(DATA_DIR, 'hls'));
 
 /** 按 muse 编号找 MV 源文件：先查原编号名缓存（music/ts），再查批量下载的「歌手 - 歌名.ts」。 */
@@ -646,12 +647,23 @@ function proxyAndCache(remoteUrl, res, opts = {}) {
                 return reject(err);
               }
               if (targetPath) {
-                try {
-                  fs.renameSync(`${targetPath}.part`, targetPath);
-                } catch (e) { if (!clientGone) return reject(e); }
+                (async () => {
+                  try {
+                    if (opts.normalize) {
+                      // 官方 E/ts（私有头 / AES 分段加密）→ 标准 TS，缓存里只存标准格式
+                      try { await ets.normalizeFile(`${targetPath}.part`); }
+                      catch (ne) { console.error('[ets] 规范化失败，保留原始缓存:', ne.message); }
+                    }
+                    fs.renameSync(`${targetPath}.part`, targetPath);
+                  } catch (e) {
+                    if (!clientGone) return reject(e);
+                    return;
+                  }
+                  resolve();
+                  if (!clientGone) res.end();
+                })();
+                return;
               }
-              resolve();
-              if (!clientGone) res.end();
             });
           } else {
             if (err && !clientGone) return reject(err);
@@ -682,7 +694,16 @@ async function handleHls(req, res, no, file) {
   const src = findMvSource(no);
   if (!src) return sendJson(res, 404, { error: '服务器未缓存该 MV' });
   if (file === 'index.m3u8') {
-    const playlist = await hlsCache.ensure(src, no);
+    let playlist;
+    try {
+      playlist = await hlsCache.ensure(src, no);
+    } catch (e) {
+      // 旧缓存可能是带头/加密的官方 E/ts：规范化后重试一次
+      const norm = await ets.normalizeFile(src);
+      if (!norm.changed) throw e;
+      console.log(`[hls] 源文件已规范化(${norm.decrypted ? '解密' : '剥头'})，重试转封装: ${src}`);
+      playlist = await hlsCache.ensure(src, no);
+    }
     return serveMediaFile(req, res, playlist, no + '.m3u8', 'application/vnd.apple.mpegurl');
   }
   const seg = hlsCache.segmentPath(no, file);
@@ -732,7 +753,7 @@ async function handleTs(req, res, filename, query) {
   tsInflight.set(filename, promise);
   try {
     console.log(`[ts] 缓存未命中，代下载: ${filename}`);
-    await proxyAndCache(src, res, { targetPath: target, contentType: tsContentType(filename) });
+    await proxyAndCache(src, res, { targetPath: target, contentType: tsContentType(filename), normalize: true });
     const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
     console.log(`[ts] 已缓存: ${filename} (${(size / 1024 / 1024).toFixed(1)}MB)`);
     done();
