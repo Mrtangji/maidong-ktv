@@ -167,8 +167,8 @@ async function normalizeFile(inputPath) {
     // 有签名：AES-256-ECB 分段解密 + 剥头（与安卓 TsDecryptor 完全一致）
     const cipher = crypto.createDecipheriv('aes-256-ecb', signed.key, null);
     cipher.setAutoPadding(false);
-    const inStream = fs.createReadStream(inputPath, { start: HEADER_SIZE });
-    const outStream = fs.createWriteStream(tmp);
+    const inStream = fs.createReadStream(inputPath, { start: HEADER_SIZE, signal });
+    const outStream = fs.createWriteStream(tmp, { signal });
     await new Promise((resolve, reject) => {
       let segmentIndex = 0;
       let rest = Buffer.alloc(0);

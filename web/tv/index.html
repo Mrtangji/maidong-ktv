@@ -514,7 +514,8 @@ function renderBulk(st) {
   }
   const rangeTxt = (st.from && st.to) ? ` · 区间 第 ${st.from} ~ ${st.to} 首` : '';
   info.innerHTML = `曲库目录：<b>${st.catalog}</b> 首（已按最常唱排序）` + rangeTxt +
-    (st.running ? ' · <span style="color:var(--accent)">下载中…</span>' : (st.total ? ' · 已停止' : ''));
+    (st.stopping ? ' · <span style="color:#ffb54d">停止中…（正在中断在途下载）</span>'
+      : st.running ? ' · <span style="color:var(--accent)">下载中…</span>' : (st.total ? ' · 已停止' : ''));
   let phaseTxt = '';
   if (st.phase === 'scan') {
     phaseTxt = ` · <span style="color:var(--accent)">扫库中 ${st.scanned}/${st.scanTotal}（在库 ${st.have} · 损坏 ${st.invalid}）</span>`;

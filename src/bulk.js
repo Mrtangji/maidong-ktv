@@ -37,10 +37,23 @@ function installXhrShim() {
     open(method, url) { this._method = method; this._url = url; }
     setRequestHeader() {}
     send(body) {
-      const done = (r) => setTimeout(() => {
-        if (r instanceof Error) { this.onerror && this.onerror(r); return; }
-        this.status = r.s; this.responseText = r.b; this.onload && this.onload();
-      }, 0);
+      // 任何情况下都必须让回调落定：vendor 脚本可能只设置了 onload 没设置 onerror，
+      // 若请求挂死（如超时后脚本不处理 onerror），await getSongUrl 会永远挂起 → 停止按钮失效。
+      let settled = false;
+      const done = (r) => {
+        if (settled) return;
+        settled = true;
+        setTimeout(() => {
+          if (r instanceof Error) {
+            if (this.onerror) return this.onerror(r);
+            // 脚本未设置 onerror：伪造 0 状态响应触发其 onload 里的错误分支
+            this.status = 0; this.responseText = '';
+            this.onload && this.onload();
+            return;
+          }
+          this.status = r.s; this.responseText = r.b; this.onload && this.onload();
+        }, 0);
+      };
       const mod = this._url.startsWith('https') ? https : http;
       const req = mod.request(this._url, {
         method: this._method,
@@ -50,9 +63,16 @@ function installXhrShim() {
         let b = '';
         res.on('data', (c) => { b += c; });
         res.on('end', () => done({ s: res.statusCode, b }));
+        res.on('error', (e) => done(e));
       });
       req.on('timeout', () => req.destroy(new Error('timeout')));
       req.on('error', (e) => done(e));
+      // 绝对期限兜底：不管连接处于什么状态（如 CDN 慢速滴流骗过 idle timeout）都强制结束
+      const killer = setTimeout(() => {
+        try { req.destroy(new Error('request deadline exceeded')); } catch (_) {}
+        done(new Error('换链请求超时（30s 绝对期限）'));
+      }, 30000);
+      if (killer.unref) killer.unref();
       if (body) req.write(body);
       req.end();
     }
@@ -216,6 +236,18 @@ class BulkDownloader {
   stop() {
     if (!this.state.running) return { ok: false, error: '没有进行中的批量下载' };
     this.state.stopRequested = true;
+    // 级联中断在途下载 / 规范化流
+    try { if (this._abort) this._abort.abort(); } catch (_) {}
+    // 看门狗兜底：万一仍有不可中断的操作（如卡死的同步 fs）挂住 worker，45s 后强制收尾
+    clearTimeout(this._stopTimer);
+    this._stopTimer = setTimeout(() => {
+      if (this.state.running && this.state.stopRequested) {
+        this.state.running = false;
+        this.state.current = '';
+        this._saveState();
+      }
+    }, 45000);
+    if (this._stopTimer.unref) this._stopTimer.unref();
     return { ok: true };
   }
 
@@ -224,6 +256,7 @@ class BulkDownloader {
       muse: this.museExists(),
       catalog: this.catalogCount(),
       running: this.state.running,
+      stopping: !!(this.state.running && this.state.stopRequested),
       mode: this.state.mode || 'range',
       phase: this.state.phase || '',
       verify: this.state.verify !== false,
@@ -562,6 +595,8 @@ class BulkDownloader {
   }
 
   async _run() {
+    this._abort = new AbortController();   // stop() 时级联中断在途下载/流
+    clearTimeout(this._stopTimer);
     let api;
     if (this.state.mode === 'mv') {
       // 编号MV补下：固定用 vendor 版 ktv_api（demo 过滤 + ls/设备轮询 + regenerateDevice），
@@ -662,6 +697,7 @@ class BulkDownloader {
           let stubbed = false;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const url = await api.getSongUrl(item.no, '720', false, this.state.mode === 'mv' ? '0' : undefined);
+            if (this.state.stopRequested) throw STOPPED;
             if (!url) throw new Error('换链失败');
             // 反盗版 .ls 链：换设备重试或记档跳过
             if (/\.ls(\?|#|$)/i.test(url)) {
@@ -680,14 +716,19 @@ class BulkDownloader {
               if (!fs.existsSync(p)) { target = p; break; }
             }
             if (!target) break;   // 已存在，视为完成
-            await this._download(url, target);
+            await this._download(url, target, 3, this._abort ? this._abort.signal : null);
+            if (this.state.stopRequested) throw STOPPED;
             // 官方 E/ts（私有头 / AES 分段加密）：规范化成标准 TS，否则无法播放/转码
             try {
-              const norm = await ets.normalizeFile(target);
+              const norm = await ets.normalizeFile(target, this._abort ? this._abort.signal : null);
               if (norm.changed) this.state.etsStripped = (this.state.etsStripped || 0) + 1;
-            } catch (_) { /* 规范化失败保留原样，交给成片校验判定 */ }
+            } catch (e) {
+              if (this.state.stopRequested) throw STOPPED;
+              /* 规范化失败保留原样，交给成片校验判定 */
+            }
             // 成片校验：不是有效歌曲 → 删除；反盗版占位 → 换设备重试或记档跳过
             const bad = await this.validateSongFile(target);
+            if (this.state.stopRequested) throw STOPPED;
             if (bad) {
               try { fs.unlinkSync(target); } catch (_) {}
               if (isStubReason(bad)) {
@@ -715,6 +756,11 @@ class BulkDownloader {
             if (this.state.mode === 'mv') this._removeAntipiracy(item.no);   // 补下成功，移出记录
           }
         } catch (e) {
+          if (e === STOPPED || (e && e.name === 'AbortError') || this.state.stopRequested) {
+            // 停止中断：清理半成品后静默退出，不计失败
+            if (target) { try { fs.unlinkSync(target + '.part'); } catch (_) {} }
+            return;
+          }
           const msg = String(e && e.message || e);
           if (isStubReason(msg)) {
             // 下载阶段拦截到的占位（如 Content-Length 命中黑名单）：同样记档跳过，不计失败
@@ -735,21 +781,23 @@ class BulkDownloader {
     // mv 模式单线程：同一 api 实例的设备重生不可并发
     const workers = Array.from({ length: this.state.mode === 'mv' ? 1 : DL_CONCURRENCY }, () => worker(queue));
     await Promise.all(workers);
+    clearTimeout(this._stopTimer);
     this.state.running = false;
     this.state.current = '';
     this.state.phase = '';
     this._saveState();
   }
 
-  _download(url, target, redirectsLeft = 3) {
+  _download(url, target, redirectsLeft = 3, signal = null) {
     return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(new Error('已停止'));
       const file = fs.createWriteStream(target + '.part');
       const mod = url.startsWith('https') ? https : http;
-      const req = mod.get(url, { timeout: 60000, headers: { Accept: '*/*' } }, (res) => {
+      const req = mod.get(url, { timeout: 60000, signal, headers: { Accept: '*/*' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
           res.resume();
           file.close();
-          return this._download(res.headers.location, target, redirectsLeft - 1).then(resolve, reject);
+          return this._download(res.headers.location, target, redirectsLeft - 1, signal).then(resolve, reject);
         }
         if (res.statusCode !== 200) {
           res.resume();
@@ -770,6 +818,11 @@ class BulkDownloader {
       req.on('timeout', () => req.destroy(new Error('下载超时')));
       req.on('error', (e) => {
         file.close(() => fs.unlink(target + '.part', () => reject(e)));
+      });
+      file.on('error', (e) => {
+        try { req.destroy(); } catch (_) {}
+        try { fs.unlinkSync(target + '.part'); } catch (_) {}
+        reject(e);
       });
     });
   }
