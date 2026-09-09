@@ -523,7 +523,7 @@ function renderBulk(st) {
     return;
   }
   if (st.mode === 'scan' && st.scanTotal) {
-    phaseTxt = ` · 扫库结果：在库 <b>${st.have}</b> · 损坏 <b>${st.invalid}</b> · 已删无用 <b>${st.removed || 0}</b> · 待补 <b>${st.total}</b>`;
+    phaseTxt = ` · 扫库结果：在库 <b>${st.have}</b> · 损坏 <b>${st.invalid}</b> · 已删无用 <b>${st.removed || 0}</b>${st.etsStripped ? ` · 剥头修复 <b>${st.etsStripped}</b>` : ''} · 待补 <b>${st.total}</b>`;
   }
   if (st.mode === 'mv') {
     phaseTxt = ` · MV补下：成功 <b>${st.done}</b> · 跳过反盗版 <b>${st.stubbed || 0}</b> · 失败 <b>${st.failed}</b>` +

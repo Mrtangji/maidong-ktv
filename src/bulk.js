@@ -80,7 +80,7 @@ class BulkDownloader {
       mode: 'range',        // range=按区间下载 | scan=扫库补缺 | mv=编号MV补下
       phase: '',            // 扫库补缺的执行阶段：scan → download → 空（结束）
       verify: true,         // 扫库时是否校验已下载 ts 完整性
-      scanned: 0, scanTotal: 0, have: 0, invalid: 0, removed: 0, stubbed: 0,
+      scanned: 0, scanTotal: 0, have: 0, invalid: 0, removed: 0, stubbed: 0, etsStripped: 0,
     };
     this._loadState();
   }
@@ -232,6 +232,7 @@ class BulkDownloader {
       invalid: this.state.invalid || 0,
       removed: this.state.removed || 0,
       stubbed: this.state.stubbed || 0,
+      etsStripped: this.state.etsStripped || 0,
       antipiracy: this.antipiracyCount(),
       failedLog: this._failedMap().size,
       total: this.state.total,
@@ -370,6 +371,46 @@ class BulkDownloader {
   }
 
   /**
+   * 官方 E/ts 格式检测：文件前部带自定义头（512 字节等），其后才是标准 188 字节包 TS 流。
+   * 判定：从 offset 1~4096 内找到起点 i，满足 (size-i) 按 188 整包对齐，且连续 8 个包首字节都是 0x47。
+   * 返回头部长度（0 表示没有头）。
+   */
+  _etsHeaderOffset(p) {
+    try {
+      const size = fs.statSync(p).size;
+      if (size < 188 * 8 + 1) return 0;
+      const fd = fs.openSync(p, 'r');
+      try {
+        const buf = Buffer.alloc(4096);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        for (let i = 1; i <= n - 188 * 8; i++) {
+          if ((size - i) % 188 !== 0) continue;
+          let ok = true;
+          for (let k = 0; k < 8; k++) { if (buf[i + k * 188] !== 0x47) { ok = false; break; } }
+          if (ok) return i;
+        }
+        return 0;
+      } finally { fs.closeSync(fd); }
+    } catch (_) { return 0; }
+  }
+
+  /** 剥离官方 E/ts 的自定义文件头，转成标准 TS（就地替换）。返回是否剥离。 */
+  async _normalizeEtsFile(p) {
+    const off = this._etsHeaderOffset(p);
+    if (!off) return false;
+    const tmp = p + '.strip';
+    await new Promise((resolve, reject) => {
+      const rd = fs.createReadStream(p, { start: off });
+      const wr = fs.createWriteStream(tmp);
+      rd.on('error', reject); wr.on('error', reject);
+      wr.on('finish', resolve);
+      rd.pipe(wr);
+    });
+    fs.renameSync(tmp, p);
+    return true;
+  }
+
+  /**
    * TS 结构完整性校验（轻量，不解析流内容）：
    *   大小 > 0 且按 188（或 M2TS 192）字节整包对齐；
    *   首包 / 尾包 / 中部抽样包的同步字节必须是 0x47。
@@ -490,6 +531,13 @@ class BulkDownloader {
           if (!validNames.has(f)) { fs.unlinkSync(p); return 'removed'; }   // 孤儿 ts：目录里没有对应条目
           if (verify) {
             let bad = this.validateSongFileCheap(p);
+            if (bad) {
+              // 官方 E/ts 带自定义文件头：剥离后重验，能救活就修复保留（不删除）
+              if (await this._normalizeEtsFile(p)) {
+                this.state.etsStripped = (this.state.etsStripped || 0) + 1;
+                bad = this.validateSongFileCheap(p);
+              }
+            }
             if (!bad && probeOk) {
               probed++;
               bad = await this._ffprobeCheck(p);   // 结构合法但解不出音视频 → 无法渲染，同样无效
@@ -669,6 +717,10 @@ class BulkDownloader {
             }
             if (!target) break;   // 已存在，视为完成
             await this._download(url, target);
+            // 官方 E/ts 带自定义文件头（512 字节等）：剥成标准 TS，否则无法播放/转码
+            if (await this._normalizeEtsFile(target)) {
+              this.state.etsStripped = (this.state.etsStripped || 0) + 1;
+            }
             // 成片校验：不是有效歌曲 → 删除；反盗版占位 → 换设备重试或记档跳过
             const bad = await this.validateSongFile(target);
             if (bad) {
