@@ -101,13 +101,24 @@ function shouldDecrypt(segmentIndex, firstEncryptedSegment, interval) {
     (segmentIndex > firstEncryptedSegment && segmentIndex % interval === 1);
 }
 
-/** 文件头偏移探测（无签名变体）：找 188 间隔连续 8 包同步字节、且 (size-i) 整包对齐的起点。 */
+/** 文件头偏移探测（无签名变体）：找 188/192 间隔连续 8 包同步字节、且 (size-i) 整包对齐的起点。 */
 function detectHeaderOffset(size, head) {
+  // 188 标准 TS：同步字节就在包首
   for (let i = 1; i <= head.length - TS_PACKET_SIZE * 8; i++) {
     if ((size - i) % TS_PACKET_SIZE !== 0) continue;
     let ok = true;
     for (let k = 0; k < 8; k++) {
       if (head[i + k * TS_PACKET_SIZE] !== 0x47) { ok = false; break; }
+    }
+    if (ok) return i;
+  }
+  // 192 M2TS：每包前 4 字节 TP_extra_header，0x47 在包首 +4 处
+  const M2TS_PACKET = 192;
+  for (let i = 1; i <= head.length - M2TS_PACKET * 8; i++) {
+    if ((size - i) % M2TS_PACKET !== 0) continue;
+    let ok = true;
+    for (let k = 0; k < 8; k++) {
+      if (head[i + 4 + k * M2TS_PACKET] !== 0x47) { ok = false; break; }
     }
     if (ok) return i;
   }
@@ -126,7 +137,9 @@ function isValidTsStream(file) {
     const fd = fs.openSync(file, 'r');
     try {
       const buf = Buffer.alloc(1);
-      const syncOk = (pos) => { fs.readSync(fd, buf, 0, 1, pos); return buf[0] === 0x47; };
+      // 192 字节 M2TS 包：每包前 4 字节是 TP_extra_header，0x47 同步字节在 +4 偏移处
+      const syncPos = (pos) => (pkt === 192 ? pos + 4 : pos);
+      const syncOk = (pos) => { fs.readSync(fd, buf, 0, 1, syncPos(pos)); return buf[0] === 0x47; };
       if (!syncOk(0)) return false;
       if (!syncOk(size - pkt)) return false;
       const mid = Math.floor(size / 2 / pkt) * pkt;

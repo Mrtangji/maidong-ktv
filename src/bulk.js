@@ -425,8 +425,10 @@ class BulkDownloader {
       const fd = fs.openSync(p, 'r');
       try {
         const buf = Buffer.alloc(1);
+        // 192 字节 M2TS 包：每包前 4 字节是 TP_extra_header，0x47 同步字节在 +4 偏移处
+        const syncPos = (pos) => (pkt === 192 ? pos + 4 : pos);
         const syncOk = (pos) => {
-          fs.readSync(fd, buf, 0, 1, pos);
+          fs.readSync(fd, buf, 0, 1, syncPos(pos));
           return buf[0] === 0x47;
         };
         if (!syncOk(0)) return false;
@@ -747,6 +749,7 @@ class BulkDownloader {
               if (norm.changed) this.state.etsStripped = (this.state.etsStripped || 0) + 1;
             } catch (e) {
               if (this.state.stopRequested) throw STOPPED;
+              if (timedOut) throw new Error(`单曲处理超时（${SONG_TIMEOUT_MS / 1000}s），已跳过`);
               /* 规范化失败保留原样，交给成片校验判定 */
             }
             // 成片校验：不是有效歌曲 → 删除；反盗版占位 → 换设备重试或记档跳过
@@ -874,21 +877,26 @@ class BulkDownloader {
       for (let i = 0; i < n; i++) { try { fs.unlinkSync(target + '.seg' + i); } catch (_) {} }
       throw e;
     }
-    // 顺序拼接所有段 → target.part
+    // 顺序拼接所有段 → target.part（out 必须挂 error 监听，否则磁盘满等 IO 错误会成为
+    // 未捕获异常直接崩掉整个 Node 进程）
     const out = fs.createWriteStream(target + '.part');
+    let outErr = null;
+    out.on('error', (e) => { outErr = e; });
     try {
       for (let i = 0; i < n; i++) {
         const segPath = target + '.seg' + i;
         const data = fs.readFileSync(segPath);
         if (!out.write(data)) await new Promise((r) => out.once('drain', r));
         fs.unlinkSync(segPath);
+        if (outErr) throw outErr;
       }
     } catch (e) {
       try { out.destroy(); } catch (_) {}
       try { fs.unlinkSync(target + '.part'); } catch (_) {}
       throw e;
     }
-    await new Promise((resolve) => out.end(resolve));
+    await new Promise((resolve, reject) => out.end(() => (outErr ? reject(outErr) : resolve())));
+    if (outErr) { try { fs.unlinkSync(target + '.part'); } catch (_) {} throw outErr; }
     await fs.promises.rename(target + '.part', target);
   }
 
@@ -907,7 +915,19 @@ class BulkDownloader {
         }
         const f = fs.createWriteStream(dest, { signal: signal || undefined });
         res.pipe(f);
-        f.on('finish', () => f.close(resolve));
+        f.on('finish', () => f.close(() => {
+          // CDN 提前断流（干净 close 不 RST）时也能走 finish → 必须核对段长度，
+          // 否则拼接出内容错位的损坏文件
+          try {
+            const want = end - start + 1;
+            const got = fs.statSync(dest).size;
+            if (got !== want) {
+              try { fs.unlinkSync(dest); } catch (_) {}
+              return reject(new Error(`分段长度不符（应 ${want} 实 ${got}）`));
+            }
+            resolve();
+          } catch (e) { reject(e); }
+        }));
         f.on('error', (e) => {
           try { req.destroy(); } catch (_) {}
           try { fs.unlinkSync(dest); } catch (_) {}
@@ -946,8 +966,17 @@ class BulkDownloader {
           try { fs.unlinkSync(target + '.part'); } catch (_) {}
           return reject(new Error(`反盗版占位文件（${clen} 字节）`));
         }
+        let received = 0;
+        res.on('data', (c) => { received += c.length; });
         res.pipe(file);
-        file.on('finish', () => file.close(() => fs.rename(target + '.part', target, resolve)));
+        file.on('finish', () => file.close(() => {
+          // 声明了长度但流被截断（CDN 提前干净断开）→ 不落正名，按失败处理
+          if (clen && received !== clen) {
+            fs.unlink(target + '.part', () => {});
+            return reject(new Error(`下载不完整（应 ${clen} 实 ${received} 字节）`));
+          }
+          fs.rename(target + '.part', target, resolve);
+        }));
       });
       req.on('timeout', () => req.destroy(new Error('下载超时')));
       req.on('error', (e) => {
